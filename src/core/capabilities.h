@@ -43,6 +43,27 @@ enum class Capability : std::uint32_t {
   OrphanCleanup = 1U << 12,
 };
 
+/// 全部能力位的枚举清单。
+///
+/// **新增能力位时必须同步加到这里**，否则 tests 里的覆盖检查会失败。
+/// 这条约束是刻意的：漏写名称、显示名或后果说明的后果，是界面上出现一个没有任何解释的
+/// 灰按钮 —— 用户既不知道少了什么，也不知道严重性，而「禁止静默失败」要求这种情况不出现。
+inline constexpr Capability kAllCapabilities[] = {
+    Capability::FilterIPv4,
+    Capability::FilterIPv6,
+    Capability::KillTcpV4,
+    Capability::KillTcpV6,
+    Capability::TrafficStatsTcp,
+    Capability::TrafficStatsUdp,
+    Capability::EventDrivenConnections,
+    Capability::ProcessEnumeration,
+    Capability::SessionEvents,
+    Capability::AutoStart,
+    Capability::SingleInstance,
+    Capability::Elevation,
+    Capability::OrphanCleanup,
+};
+
 /// 供日志与调试使用的英文代号。
 [[nodiscard]] const char* capabilityName(Capability capability) noexcept;
 

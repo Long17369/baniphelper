@@ -52,6 +52,20 @@ function(baniphelper_enable_warnings target)
   target_compile_options(${target} PRIVATE -Wall -Wextra)
 endfunction()
 
+# --------------------------------------------------------------- 平台隔离
+
+# 铁律的实现：核心层、平台接口层与界面层不得包含任何平台专有头。
+# 详见 cmake/BanIPHelperGuards.cmake 与 docs/architecture.md 第 12.2 节。
+include(cmake/BanIPHelperGuards.cmake)
+
+# 必须在 add_subdirectory 之前创建：各子目录里的目标依赖它。
+baniphelper_declare_platform_isolation_check()
+
 # --------------------------------------------------------------- 子目录
 
 add_subdirectory(src)
+
+if(BANIPHELPER_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

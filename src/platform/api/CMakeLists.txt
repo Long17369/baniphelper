@@ -19,3 +19,7 @@ target_include_directories(baniphelper_platform_api PUBLIC "${PROJECT_SOURCE_DIR
 target_link_libraries(baniphelper_platform_api PUBLIC BanIPHelper::Core)
 
 baniphelper_enable_warnings(baniphelper_platform_api)
+
+# 本层同样不得包含平台专有头：它是纯接口，一旦引了平台头就不再是纯接口了。
+# 用 PRIVATE 加约束，因此不会传播到链接它的 platform/<os>/ 实现上去。
+baniphelper_forbid_platform_headers(baniphelper_platform_api)

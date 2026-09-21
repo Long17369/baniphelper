@@ -12,6 +12,9 @@ find_package(Qt6 REQUIRED COMPONENTS Core)
 
 add_library(baniphelper_core STATIC
   capabilities.cpp
+  capability_check.cpp
+  capability_set.cpp
+  declared_capabilities.cpp
   error.cpp
   headers_selfcheck.cpp
   types.cpp
@@ -32,3 +35,7 @@ target_compile_definitions(baniphelper_core PRIVATE
 target_link_libraries(baniphelper_core PUBLIC Qt6::Core)
 
 baniphelper_enable_warnings(baniphelper_core)
+
+# 本层不得包含任何平台专有头。这条约束由编译期与源码扫描两道检查共同强制，
+# 见 cmake/BanIPHelperGuards.cmake。
+baniphelper_forbid_platform_headers(baniphelper_core)

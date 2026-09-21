@@ -15,3 +15,9 @@ CMakeUserPresets.json
 
 # 编辑器与工具缓存
 .cache/
+
+# Qt 与 IDE 的本地文件。这些文件里含机器绝对路径，按项目规矩不入库。
+# .qmlls.ini 由 QML 语言服务器生成，内容是构建目录与 Qt 安装位置。
+.qmlls.ini
+.qtc_clangd/
+*.user

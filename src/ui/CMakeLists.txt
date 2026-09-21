@@ -24,3 +24,6 @@ target_link_libraries(baniphelper PRIVATE
 )
 
 baniphelper_enable_warnings(baniphelper)
+
+# 界面层不得包含平台专有头：它只允许通过 core 与 platform/api 的接口取数据。
+baniphelper_forbid_platform_headers(baniphelper)

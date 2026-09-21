@@ -38,6 +38,25 @@ enum class ErrorCode : std::int32_t {
 /// 人类可读的英文代号，供日志与调试输出使用；界面显示请用 Error::message。
 [[nodiscard]] const char* errorCodeName(ErrorCode code) noexcept;
 
+/// 全部错误码的枚举清单。
+///
+/// 用途与 `kAllCapabilities` 相同：**新增错误码时必须同步加到这里**，
+/// 否则 tests 里的覆盖检查会失败。漏补英文代号的后果是日志里出现 "Unknown"，
+/// 而按错误码分类排查正是日志存在的意义。
+inline constexpr ErrorCode kAllErrorCodes[] = {
+    ErrorCode::Unknown,
+    ErrorCode::NotSupported,
+    ErrorCode::NotPermitted,
+    ErrorCode::InvalidArgument,
+    ErrorCode::NotFound,
+    ErrorCode::AlreadyExists,
+    ErrorCode::Busy,
+    ErrorCode::Timeout,
+    ErrorCode::Io,
+    ErrorCode::Internal,
+    ErrorCode::Platform,
+};
+
 /// 失败原因。成功路径不会构造它，因此「有错必有据」。
 struct Error {
   ErrorCode code = ErrorCode::Unknown;

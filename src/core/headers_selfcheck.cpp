@@ -6,7 +6,10 @@
 #include <type_traits>
 
 #include "core/capabilities.h"
+#include "core/capability_check.h"
+#include "core/capability_set.h"
 #include "core/config.h"
+#include "core/declared_capabilities.h"
 #include "core/error.h"
 #include "core/icapabilities.h"
 #include "core/iconfig.h"
@@ -46,6 +49,11 @@ static_assert(std::is_abstract_v<ISafetyGuard>);
 static_assert(!std::is_copy_constructible_v<ISafetyGuard>);
 static_assert(!std::is_move_constructible_v<ISafetyGuard>);
 
+// 能力协商模块：声明类是接口的唯一实现，同样不允许按值传递。
+static_assert(!std::is_abstract_v<DeclaredCapabilities>);
+static_assert(!std::is_copy_constructible_v<DeclaredCapabilities>);
+static_assert(!std::is_move_constructible_v<DeclaredCapabilities>);
+
 // 值类型必须是可复制、可移动的，否则结果类型与容器都用不了。
 static_assert(std::is_copy_constructible_v<Address>);
 static_assert(std::is_copy_constructible_v<ConnectionKey>);
@@ -54,6 +62,9 @@ static_assert(std::is_copy_constructible_v<MatchCondition>);
 static_assert(std::is_copy_constructible_v<Rule>);
 static_assert(std::is_copy_constructible_v<ConnectionObservation>);
 static_assert(std::is_copy_constructible_v<AllowlistEntry>);
+static_assert(std::is_copy_constructible_v<CapabilitySet>);
+static_assert(std::is_copy_assignable_v<CapabilitySet>);
+static_assert(std::is_copy_constructible_v<UnsupportedCapability>);
 
 // 错误信息不允许为空是硬约定，这里把它钉在类型层面：有 Error 就必须有 message。
 static_assert(std::is_copy_constructible_v<Error>);
