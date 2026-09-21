@@ -1,4 +1,5 @@
 #include "platform/win/filter_engine.h"
+#include "platform/win/wfp_guids.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -104,7 +105,10 @@ Result<void> ensureOwnIdentity(HANDLE engine) {
 /// 换的是「清理的完整性不依赖人记得改」。
 ///
 /// 顺带绕开了一个现实约束：MinGW 的 fwpmu.h 不提供 FWPM_LAYER_* 这类层 GUID 常量，
-/// 系统里也没有可读的层名（displayData.name 是资源串），写死 GUID 无从校验。
+/// 系统里也没有可读的层名（displayData.name 是资源串），写死一份清单无从校验。
+///
+/// `wfp_guids.h` 里现在有本工具需要的那几层，但那是**下发规则时按需取用**的常量，
+/// 不能拿来替换这里的全量枚举 —— 上一段说的「漏一层就静默留垃圾」依然成立。
 Result<QList<GUID>> enumAllLayerKeys(HANDLE engine) {
   FWPM_LAYER_ENUM_TEMPLATE0 layerTemplate{};
   HANDLE enumHandle = nullptr;

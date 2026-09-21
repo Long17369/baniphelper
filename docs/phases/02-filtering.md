@@ -15,7 +15,7 @@
 | 过滤层选择依据 | 见 [architecture.md](../architecture.md) 第 3 节 |
 | 主动断连的边界 | IPv4 用 `SetTcpEntry`，IPv6 本阶段不做即时断连 |
 | 平台相关实现 | 一律经 `IFilterEngine` 与 `IKiller`，不得在核心层直接调用系统接口 |
-| WFP 层与条件 GUID | **工具链不自带，需自行维护常量表**，见第 2.1 节 |
+| WFP 层与条件 GUID | 工具链不自带，已在 S1.15 落地常量表并逐条核对，见第 2.1 节 |
 | 过滤器枚举的约束 | 枚举模板必须同时给出 provider 与层，见第 2.1 节 |
 
 ### 2.1 实施 S1.7 时挖出来的两个平台事实
@@ -33,9 +33,10 @@
 
 1. **取值必须逐个校验**，不能照记忆写。校验办法是现成的：
    `FwpmLayerEnum0` 会列出系统里全部层的 `layerKey`，拿候选值去比对即可。
-   `tmp/probe_wfp_layers.cpp` 就是干这个的。已确认可用的四个值是
-   `ALE_AUTH_CONNECT_V4`、`ALE_AUTH_CONNECT_V6`、`ALE_AUTH_RECV_ACCEPT_V4`、`ALE_AUTH_RECV_ACCEPT_V6`。
-   S2.6 要用到的入站 UDP 数据报层与 S2.7 的传输层兜底，各自在第一次用到时按同样办法确认。
+   这张表已经落地（S1.15）：取值、出处与核对工具见
+   [01-foundation.md](01-foundation.md) 的 S1.15 与 `src/platform/win/wfp_guids.h`。
+   其中 10 个层常量已在本机运行时 **10/10 全部对上**，
+   S2.6 需要的入站 UDP 数据报层就在其中，届时不必再单独确认。
 2. **层名不能用来认层**。系统里层的 `displayData.name` 是资源串或短分类名
    （实测取到的是 `ALE`、`IP`、`RPC` 这类，甚至空串），靠名字区分不出是哪一层。
 
