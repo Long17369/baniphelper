@@ -15,6 +15,47 @@
 | 过滤层选择依据 | 见 [architecture.md](../architecture.md) 第 3 节 |
 | 主动断连的边界 | IPv4 用 `SetTcpEntry`，IPv6 本阶段不做即时断连 |
 | 平台相关实现 | 一律经 `IFilterEngine` 与 `IKiller`，不得在核心层直接调用系统接口 |
+| WFP 层与条件 GUID | **工具链不自带，需自行维护常量表**，见第 2.1 节 |
+| 过滤器枚举的约束 | 枚举模板必须同时给出 provider 与层，见第 2.1 节 |
+
+### 2.1 实施 S1.7 时挖出来的两个平台事实
+
+这两条都由实测确认，不是推断。它们直接决定 S2 的代码怎么写，因此提前记在这里。
+
+**其一：MinGW 的 WFP 头没有层与条件字段的 GUID。**
+
+`fwpmu.h` 只 `DEFINE_GUID` 了三个 provider 常量，`FWPM_LAYER_*` 与 `FWPM_CONDITION_*`
+**一个都没有**；`libfwpuclnt.a` 也只导出函数，不导出这些 GUID 符号。
+所以「不需要 Windows SDK」这个结论仍然成立，但代价是：**层与条件的 GUID 必须自己维护一张常量表**，
+取值来自微软文档（属于 WFP 的 ABI，不会变）。
+
+维护这张表有两条纪律：
+
+1. **取值必须逐个校验**，不能照记忆写。校验办法是现成的：
+   `FwpmLayerEnum0` 会列出系统里全部层的 `layerKey`，拿候选值去比对即可。
+   `tmp/probe_wfp_layers.cpp` 就是干这个的。已确认可用的四个值是
+   `ALE_AUTH_CONNECT_V4`、`ALE_AUTH_CONNECT_V6`、`ALE_AUTH_RECV_ACCEPT_V4`、`ALE_AUTH_RECV_ACCEPT_V6`。
+   S2.6 要用到的入站 UDP 数据报层与 S2.7 的传输层兜底，各自在第一次用到时按同样办法确认。
+2. **层名不能用来认层**。系统里层的 `displayData.name` 是资源串或短分类名
+   （实测取到的是 `ALE`、`IP`、`RPC` 这类，甚至空串），靠名字区分不出是哪一层。
+
+写错层 GUID 的后果很隐蔽：过滤器会落在别的层上，表现成「规则明明下发了却不起作用」，
+而且不会报错。所以校验这一步不能省。
+
+**其二：枚举过滤器必须同时给出 provider 与层。**
+
+`FwpmFilterCreateEnumHandle0` 的模板里，`layerKey` 留空会被 WFP 以
+`FWP_E_LAYER_NOT_FOUND`（`0x80320004`）拒绝；只给 `providerKey` 不够。
+
+因此「找出本工具的全部过滤器」只能是：先 `FwpmLayerEnum0` 拿全部层，
+再逐层用本工具的 `providerKey` 过滤一遍。
+
+**不要改成写死一份层清单**：清单必须随功能扩展而增补，只要有一次忘了补，
+那一层上的旧过滤器就永远清理不掉，而且清理还会报告成功 —— 是静默失败。
+逐层问一遍的代价是启动时多几十毫秒，换的是清理的完整性不依赖人记得改。
+
+另外一个结构细节：`FWPM_FILTER_ENUM_TEMPLATE0::providerKey` 与 `FWPM_FILTER0::providerKey`
+是 `GUID*` 而不是值，要传地址；常量是 `const`，得先拷一份可写的出来。
 
 ## 3 步骤清单
 

@@ -19,7 +19,7 @@
 | Qt | Qt 6，含 Qt Quick、Quick Controls、Svg、Charts | 已定稿，Qt Quick 做界面 |
 | 编译器 | Qt 套件自带的 MinGW 工具链（GCC 13，x86_64） | 与 Qt 同源，勿与系统里另一套 MinGW 混用 |
 | 构建 | CMake 与 Ninja，随 Qt 安装一并提供 | 整链齐全，不需要 MSVC |
-| WFP 头文件 | `fwpmu.h`、`fwptypes.h`、`tcpestats.h`、`iphlpapi.h`、`tcpmib.h`、`evntrace.h` | 全部存在，不需要 Windows SDK |
+| WFP 头文件 | `fwpmu.h`、`fwptypes.h`、`tcpestats.h`、`iphlpapi.h`、`tcpmib.h`、`evntrace.h` | 全部存在，不需要 Windows SDK。**但 `fwpmu.h` 不含 `FWPM_LAYER_*` 与 `FWPM_CONDITION_*` 常量**，这两类 GUID 要自己维护，见第 10 节 |
 | WFP 导入库 | `libfwpuclnt.a`、`libiphlpapi.a`、`libws2_32.a`、`libwevtapi.a` | 全部存在 |
 | 抓包 | Npcap 已装，WinDivert 未装 | 需要时再引 WinDivert |
 | 其他 | Python 3 与 Node 已装 | Python 仅用于 `tmp/` 下的一次性冒烟验证，不入库 |
@@ -500,6 +500,8 @@ Windows 的 Winsock raw socket 有硬限制（官方文档原文）：
 | **白名单模式把自己锁死** | ⚠️ 最高风险项，超时自动回滚是硬性要求 |
 | 计划任务自启 | 提权托盘必须靠计划任务（注册表 Run 键带不了提权），首次配置需引导用户或提供一键注册脚本 |
 | 退出后 filter 残留 | 崩溃时更明显。启动清理逻辑必须有，且要能区分「这是不是别的工具（如 simplewall）的 filter」 |
+| WFP 层与条件 GUID 需自建 | 工具链的 WFP 头不含 `FWPM_LAYER_*` 与 `FWPM_CONDITION_*`，导入库也不导出这些符号，需自建常量表并**逐个校验**。写错的后果很隐蔽：过滤器落在别的层上，规则看着下发了却不起作用，且不报错。系统里层的名字是资源串，认不出是哪一层，校验只能靠 `FwpmLayerEnum0` 比对 GUID |
+| 过滤器枚举必须按层 | 枚举模板的 `layerKey` 不能留空，否则 `FWP_E_LAYER_NOT_FOUND`。因此「找出自家全部过滤器」只能是逐层枚举。**不许改成写死的层清单**：清单忘了增补时，那一层上的旧过滤器就永远清不掉，而清理还会报成功 |
 | 记录量爆炸 | UDP 与短连接场景可能每秒数百条，需批量写入加保留期，并允许整体关闭 |
 | eStats 启用时机 | 对「已经存在很久」的连接启用后能否立刻读到累计值，**需实测**（阶段三 S3.2） |
 | UDP 流量统计 | **方案已定：走 ETW**（Kernel-Network 的 UDP 事件自带字节数）。残留风险仅为事件是否含 PID，阶段三 S3.3 实测 |
