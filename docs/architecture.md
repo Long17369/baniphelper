@@ -115,6 +115,15 @@ Python 只用于 `tmp/` 下的一次性冒烟验证（例如确认 WFP 语义、
 - 列表行右侧悬浮「封禁」一键操作，不做多层弹窗
 - 状态栏常显：生效规则数、白名单模式倒计时、累计拦截包数
 
+**许可后果（2026 年 9 月 21 日查证）**：`QtCharts` 与 `QtHTTPServer` 都属于
+**仅商业或 GPLv3** 的模块 —— Qt 官方文档的原话是这些模块不提供 LGPLv3 那一档
+（Qt Charts 自 6.10 起还被官方废弃，建议改用 Qt Graphs）。
+用到其中任何一个，整个程序就必须按 GPLv3 分发。既然两条都已在规划里，
+本项目定为 **`GPL-3.0-or-later`**，见根目录 [LICENSE](../LICENSE) 与
+[THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。
+其余模块（Core、Gui、Qml、Quick、QuickControls2、Svg、Sql、Network、Test）为 LGPLv3。
+反过来说，项目按 GPLv3 发布时，LGPLv3 那批模块的额外义务被更强的条款自动覆盖。
+
 ### 2.3 模块结构
 
 ```mermaid
