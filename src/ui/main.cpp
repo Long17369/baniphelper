@@ -6,6 +6,7 @@
 #include <cstdlib>
 
 #include "core/config_descriptors.h"
+#include "core/database.h"
 #include "core/json_config.h"
 #include "core/log.h"
 #include "core/platform_backend.h"
@@ -119,6 +120,22 @@ int main(int argc, char* argv[]) {
   }
   for (const QString& problem : logProblems) {
     logWrite(LogLevel::Warn, QStringLiteral("配置里的日志项不可用，已退回默认值：%1").arg(problem));
+  }
+
+  // 数据存储。建库与迁移都在 open 里完成。
+  // 失败必须显式退出：带着一个打不开的库继续跑，后面会以「规则存不上」这种更难懂的方式失败。
+  Database database;
+  const Result<void> storage = database.open(paths.value().databaseFile);
+  if (!storage) {
+    logWrite(LogLevel::Error, QStringLiteral("打开数据库失败：%1").arg(storage.error().message));
+    return failWith(QStringLiteral("打开数据库失败：%1").arg(storage.error().message));
+  }
+  {
+    const Result<int> version = database.schemaVersion();
+    logWrite(LogLevel::Info,
+             QStringLiteral("数据库就绪：%1（结构版本 %2）")
+                 .arg(paths.value().databaseFile,
+                      version ? QString::number(version.value()) : QStringLiteral("未知")));
   }
 
   // 日志级别是唯一标成「不必重启」的配置项，改动必须当场生效 ——

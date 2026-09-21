@@ -37,6 +37,10 @@ baniphelper_add_test(config baniphelper_config_test
   config_test.cpp
 )
 
+baniphelper_add_test(database baniphelper_database_test
+  database_test.cpp
+)
+
 # 契约测试要把同一套断言跑在真实后端与内存后端上，因此两边都要链。
 baniphelper_add_test(platform_contract baniphelper_platform_contract_test
   platform_contract_test.cpp

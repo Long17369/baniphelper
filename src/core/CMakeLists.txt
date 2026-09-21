@@ -8,13 +8,16 @@
 #    值类型头（types / rule / record / safety / config / capabilities / error / result），
 #    **不得依赖本层的 I*.h 接口头**，否则就成了双向依赖。
 
-find_package(Qt6 REQUIRED COMPONENTS Core)
+# Sql：数据存储走 SQLite。Qt 自带的 QSQLITE 驱动把 sqlite3 静态编在插件里，
+# 所以不需要额外引第三方库，也不需要单独分发 sqlite3.dll。
+find_package(Qt6 REQUIRED COMPONENTS Core Sql)
 
 add_library(baniphelper_core STATIC
   capabilities.cpp
   capability_check.cpp
   capability_set.cpp
   config_descriptors.cpp
+  database.cpp
   declared_capabilities.cpp
   error.cpp
   headers_selfcheck.cpp
@@ -36,7 +39,10 @@ target_compile_definitions(baniphelper_core PRIVATE
 
 # 字符串与容器统一用 Qt，这是已冻结的决策：接口允许依赖 Qt；
 # 平台实现调系统 API 时走 Unicode 系列，避免代码页不一致造成乱码。
-target_link_libraries(baniphelper_core PUBLIC Qt6::Core)
+#
+# Sql 跟着 Core 一起 PUBLIC 出去：数据库是核心层的基础设施，
+# 上层不需要各自再 find_package 一次。
+target_link_libraries(baniphelper_core PUBLIC Qt6::Core Qt6::Sql)
 
 baniphelper_enable_warnings(baniphelper_core)
 
