@@ -1,0 +1,8 @@
+# 基于 LLVM 风格
+BasedOnStyle: Google
+# 其他常用设置
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BinPackArguments: false
+BinPackParameters: false
