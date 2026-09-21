@@ -1,0 +1,23 @@
+{
+  // C++ 格式化必须走仓库根目录的 .clang-format。
+  //
+  // 用户级设置里 C_Cpp.formatting 是 vcFormat，那会让扩展使用自带的
+  // VC++ 格式化器并完全忽略 .clang-format；而 vcFormat 的
+  // indent.namespaceContents 默认为 true，现象就是命名空间内容被整体缩进一档。
+  //
+  // 这几项在这里的项目级固定下来，任何人克隆下来格式化结果都一致。
+  "C_Cpp.formatting": "clangFormat",
+  "C_Cpp.clang_format_useWorkspaceFormat": true,
+  "C_Cpp.clang_format_style": "file",
+
+  // 找不到 .clang-format 时不要静默套用某个内置风格，
+  // 那会让「配置没生效」这件事看起来像「配置生效了但结果不对」。
+  "C_Cpp.clang_format_fallbackStyle": "none",
+
+  "[cpp]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools"
+  },
+  "[c]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools"
+  }
+}

@@ -2,9 +2,8 @@
 
 namespace baniphelper::core {
 
-const char* versionString() noexcept
-{
-    return BANIPHELPER_VERSION;
+const char* versionString() noexcept {
+  return BANIPHELPER_VERSION;
 }
 
 }  // namespace baniphelper::core

@@ -1,8 +1,44 @@
-# 基于 LLVM 风格
+# 本项目统一的 C++ 代码风格。
+#
+# 基线是 Google：花括号同行、2 空格缩进、指针与引用左对齐。
+# 下面只列出**刻意偏离 Google 默认值**的项，其余一律跟随基线。
+#
+# 注意：本文件必须是 UTF-8 且**不带 BOM**。带 BOM 时 clang-format 会解析失败并
+# 静默回退到默认风格，现象就是「改了配置但完全没生效」。
+---
+Language: Cpp
 BasedOnStyle: Google
-# 其他常用设置
+
+# 命名空间内容不缩进。
+# 本项目每个头文件都被 namespace 整体包住，缩进一档不带来任何信息，
+# 只会把真实层级一路往右挤。
+#
+# 注：Google 基线本身就是 None，这里写出来是为了把它钉死：
+# 一旦将来换基线，这一条不会跟着变。
+NamespaceIndentation: None
+
+# 行宽 100，比 Google 的 80 宽。
+# 接口签名里 Result<...> 与 Qt 容器类型名本来就长，80 列会把它们切得很碎。
+ColumnLimit: 100
+
+# 不重排注释（Google 默认是重排）。
+# 本项目注释是手写换行的中文，含 markdown 列表与行内代码，重排会被打乱；
+# 而且 clang-format 按字符数计列，一个汉字算一列，重排后与肉眼宽度对不上。
+ReflowComments: false
+
+# 不重排 include（Google 默认是排序并分组）。
+# 现有的分组顺序是 Qt 头一组、C/C++ 标准库头一组、本项目头一组，
+# 排序会抹掉「谁是外部依赖、谁是自己人」这个信息。
+SortIncludes: Never
+
+# 以下五项是仓库初始就定下的，保持不动：
+# 只有空实现允许留在单行，有语句的一律展开。
 AllowShortFunctionsOnASingleLine: Empty
+
+# 单行 if / for 一律换行，留出下断点与加日志的位置。
 AllowShortIfStatementsOnASingleLine: Never
 AllowShortLoopsOnASingleLine: false
+
+# 参数与实参不做紧凑填充：换行时每次只放一个，改动一个参数不会牵动整排。
 BinPackArguments: false
 BinPackParameters: false
