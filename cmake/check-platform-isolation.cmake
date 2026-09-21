@@ -17,9 +17,9 @@ endif()
 
 set(_deny_dir "${ROOT}/cmake/deny-os-headers")
 
-# 受约束的目录：核心层、平台接口层、界面层。
+# 受约束的目录：核心层、平台接口层、内存后端、界面层与测试。
 # 平台实现在 src/platform/<os>/ 下，不在其列 —— 它的职责就是调用系统接口。
-set(_guarded_dirs "src/core" "src/platform/api" "src/ui")
+set(_guarded_dirs "src/core" "src/platform/api" "src/platform/memory" "src/ui" "tests")
 
 # 禁止清单直接从禁止头目录推导，而不是在这里再抄一份，
 # 免得两处清单慢慢走样、还以为有检查。

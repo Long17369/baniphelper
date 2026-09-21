@@ -9,28 +9,33 @@ find_package(Qt6 REQUIRED COMPONENTS Test)
 # qt_standard_project_setup() 的设置，所以在这里单独打开。
 set(CMAKE_AUTOMOC ON)
 
-add_executable(baniphelper_capabilities_test
+# 注册一个 Qt 测试可执行文件。
+function(baniphelper_add_test name target source)
+  add_executable(${target} ${source})
+  target_link_libraries(${target} PRIVATE Qt6::Test BanIPHelper::Core)
+  baniphelper_enable_warnings(${target})
+  baniphelper_forbid_platform_headers(${target})
+
+  # 用 `cmake -E env` 把 Qt 的 bin 目录临时加进 PATH：
+  # 构建产物不自带 Qt 运行库，直接跑会因为找不到 DLL 而失败。
+  # 这样做而不是在预设里写死路径，是为了不让机器相关路径进入仓库；
+  # 也不用 ENVIRONMENT_MODIFICATION，那会把 CMake 最低版本抬到 3.22。
+  set(_path "$<TARGET_FILE_DIR:Qt6::Core>;$ENV{PATH}")
+  add_test(NAME ${name}
+    COMMAND "${CMAKE_COMMAND}" -E env "PATH=${_path}" "$<TARGET_FILE:${target}>")
+endfunction()
+
+baniphelper_add_test(capabilities baniphelper_capabilities_test
   capabilities_test.cpp
 )
 
-target_link_libraries(baniphelper_capabilities_test PRIVATE
-  Qt6::Test
-  BanIPHelper::Core
+# 契约测试要把同一套断言跑在真实后端与内存后端上，因此两边都要链。
+baniphelper_add_test(platform_contract baniphelper_platform_contract_test
+  platform_contract_test.cpp
 )
-
-baniphelper_enable_warnings(baniphelper_capabilities_test)
-baniphelper_forbid_platform_headers(baniphelper_capabilities_test)
-
-# 用 `cmake -E env` 把 Qt 的 bin 目录临时加进 PATH：
-# 构建产物不自带 Qt 运行库，直接跑会因为找不到 DLL 而失败。
-# 这样做而不是在预设里写死路径，是为了不让机器相关路径进入仓库；
-# 也不用 ENVIRONMENT_MODIFICATION，那会把 CMake 最低版本抬到 3.22。
-set(_bh_test_path "$<TARGET_FILE_DIR:Qt6::Core>;$ENV{PATH}")
-
-add_test(NAME capabilities
-  COMMAND "${CMAKE_COMMAND}" -E env
-          "PATH=${_bh_test_path}"
-          "$<TARGET_FILE:baniphelper_capabilities_test>"
+target_link_libraries(baniphelper_platform_contract_test PRIVATE
+  BanIPHelper::PlatformApi
+  BanIPHelper::PlatformMemory
+  # 真实后端：提供 createPlatformBackend 的实现，由 platform/CMakeLists.txt 在编译期挑。
+  BanIPHelper::Backend
 )
-
-unset(_bh_test_path)

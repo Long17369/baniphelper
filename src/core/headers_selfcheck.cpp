@@ -16,6 +16,7 @@
 #include "core/irecorder.h"
 #include "core/irulestore.h"
 #include "core/isafetyguard.h"
+#include "core/platform_backend.h"
 #include "core/record.h"
 #include "core/result.h"
 #include "core/rule.h"
@@ -65,6 +66,11 @@ static_assert(std::is_copy_constructible_v<AllowlistEntry>);
 static_assert(std::is_copy_constructible_v<CapabilitySet>);
 static_assert(std::is_copy_assignable_v<CapabilitySet>);
 static_assert(std::is_copy_constructible_v<UnsupportedCapability>);
+
+// 后端装配结果是移动语义的：它持有各接口的所有权，不允许被复制，
+// 否则会出现两个 PlatformBackend 指向同一份实现，释放两次。
+static_assert(std::is_move_constructible_v<PlatformBackend>);
+static_assert(!std::is_copy_constructible_v<PlatformBackend>);
 
 // 错误信息不允许为空是硬约定，这里把它钉在类型层面：有 Error 就必须有 message。
 static_assert(std::is_copy_constructible_v<Error>);

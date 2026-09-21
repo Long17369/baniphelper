@@ -17,6 +17,7 @@ add_library(baniphelper_core STATIC
   declared_capabilities.cpp
   error.cpp
   headers_selfcheck.cpp
+  platform_backend.cpp
   types.cpp
   version.cpp
 )

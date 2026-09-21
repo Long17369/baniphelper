@@ -1,0 +1,26 @@
+# Windows 后端：本项目本期唯一的真实实现。
+#
+# 本目录是**唯一**允许包含 Windows 专有头的地方（windows.h、fwpmu.h、iphlpapi.h 等），
+# 因此它不在平台隔离检查的受约束目录里。但两件事仍然成立：
+#
+#   1. 只通过 platform/api 的接口对外说话，不把平台类型漏出去；
+#   2. 本目录不被其他平台实现引用，公共代码只能下沉到 core/ 或 platform/api/。
+#
+# 目标名固定为 baniphelper_backend_impl：每个平台实现都用这个名字，
+# 上层的 platform/CMakeLists.txt 才知道该链谁。
+
+add_library(baniphelper_backend_impl STATIC
+  backend.cpp
+  privilege.cpp
+  single_instance.cpp
+)
+
+target_link_libraries(baniphelper_backend_impl PUBLIC
+  BanIPHelper::Core
+  BanIPHelper::PlatformApi
+)
+
+# shell32：提权重启用 ShellExecuteExW。
+target_link_libraries(baniphelper_backend_impl PRIVATE shell32)
+
+baniphelper_enable_warnings(baniphelper_backend_impl)

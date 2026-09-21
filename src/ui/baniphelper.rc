@@ -1,0 +1,7 @@
+/* 把提权清单作为 RT_MANIFEST 资源编进可执行文件。
+   资源 ID 1 是标准的应用清单位置。
+
+   这里不包含 windows.h，也不写 RT_MANIFEST 宏，直接用数字类型 24：
+   .rc 由 windres 编译，与 g++ 的头搜索路径无关，
+   写死数字可以让这个文件不依赖任何头文件。 */
+1 24 "baniphelper.manifest"

@@ -22,6 +22,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(BANIPHELPER_BUILD_TESTS "构建单元测试与平台契约测试" ON)
 
+option(BANIPHELPER_DEPLOY_QT_TO_BUILD_TREE
+  "构建后把 Qt 运行库部署到可执行文件旁边（本程序提权启动，置 OFF 会起不来）" ON)
+
 # --------------------------------------------------------------- 工具链约束
 
 # 全项目统一使用 Qt 套件自带的 MinGW，不引入 MSVC，理由见
