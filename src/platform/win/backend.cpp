@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "core/declared_capabilities.h"
+#include "platform/win/filter_engine.h"
 #include "platform/win/privilege.h"
 #include "platform/win/single_instance.h"
 
@@ -18,8 +19,18 @@ Result<PlatformBackend> createPlatformBackend(const QString& singleInstanceName)
   declared.add(Capability::Elevation);
   declared.add(Capability::SingleInstance);
 
-  backend.capabilities = std::make_unique<DeclaredCapabilities>(backend.name, declared);
+  auto capabilities = std::make_unique<DeclaredCapabilities>(backend.name, declared);
+
+  // 尚未实现的能力给出具体原因，而不是只退回到通用的后果说明：
+  // 「阶段二 S2.4」比「无法阻断通信」更能告诉使用者现在处在哪一步。
+  capabilities->setUnsupportedReason(Capability::FilterIPv4,
+                                     QStringLiteral("过滤器引擎的下发能力尚未实现，阶段二 S2.4"));
+  capabilities->setUnsupportedReason(Capability::FilterIPv6,
+                                     QStringLiteral("过滤器引擎的下发能力尚未实现，阶段二 S2.4"));
+
+  backend.capabilities = std::move(capabilities);
   backend.privilege = std::make_unique<WinPrivilege>();
+  backend.filterEngine = std::make_unique<WinFilterEngine>();
 
   const QString name =
       singleInstanceName.isEmpty() ? QString::fromLatin1(kSingleInstanceName) : singleInstanceName;

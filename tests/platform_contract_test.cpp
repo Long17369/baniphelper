@@ -14,6 +14,7 @@
 
 #include "core/platform_backend.h"
 #include "platform/memory/backend.h"
+#include "platform/memory/filter_engine.h"
 #include "platform/memory/privilege.h"
 
 using namespace baniphelper::core;
@@ -91,6 +92,10 @@ class PlatformContractTest : public QObject {
   void releaseIsIdempotent();
   void signalWithoutHolderIsNotSilentSuccess();
   void memoryPrivilegeCoversUnelevatedBranch();
+  void filterEngineOpensAndClosesIdempotently();
+  void filterEngineCleansUpOwnFiltersOnly();
+  void filterEngineRefusesWhatItCannotDo();
+  void memoryFilterEngineRemovesSeededOrphans();
 };
 
 void PlatformContractTest::backendIsComplete() {
@@ -105,6 +110,9 @@ void PlatformContractTest::capabilityDeclarationMatchesImplementation() {
   forEachBackend([](const Backends& backends) {
     const PlatformBackend& backend = backends.first;
 
+    QVERIFY2(backend.filterEngine != nullptr,
+             qPrintable(backends.label + " 后端没有装配过滤器引擎"));
+
     // 实现了某个接口，就必须把对应的能力位声明为支持。
     // 声明与实际不一致会让界面上出现「灰按钮但其实是能用的」，或反过来 ——
     // 后者更糟：用户以为能用，点下去才发现不行。
@@ -113,6 +121,12 @@ void PlatformContractTest::capabilityDeclarationMatchesImplementation() {
         qPrintable(backends.label + " 后端实现了 ISingleInstance，却没声明 SingleInstance 能力"));
     QVERIFY2(backend.capabilities->isSupported(Capability::Elevation),
              qPrintable(backends.label + " 后端实现了 IPrivilege，却没声明 Elevation 能力"));
+
+    // 过滤器引擎存在，但下发能力还没实现，因此 FilterIPv4 必须**不**被声明。
+    // 这一条与 filterEngineRefusesWhatItCannotDo 是一对：
+    // 一个管声明，一个管行为，两边必须同时成立。
+    QVERIFY2(!backend.capabilities->isSupported(Capability::FilterIPv4),
+             qPrintable(backends.label + " 后端声明了 IPv4 过滤能力，但下发还没实现"));
   });
 }
 
@@ -257,6 +271,141 @@ void PlatformContractTest::memoryPrivilegeCoversUnelevatedBranch() {
   QVERIFY(!again.hasValue());
   QVERIFY(again.error().code == ErrorCode::AlreadyExists);
   QCOMPARE(privilege.relaunchCount(), 1);
+}
+
+void PlatformContractTest::filterEngineOpensAndClosesIdempotently() {
+  forEachBackend([](const Backends& backends) {
+    IFilterEngine& engine = *backends.first.filterEngine;
+    const Result<bool> elevated = backends.first.privilege->isElevated();
+    QVERIFY(elevated.hasValue());
+
+    QVERIFY2(!engine.isOpen(), qPrintable(backends.label + " 后端刚构造出来就报告引擎已打开"));
+
+    const Result<void> opened = engine.open();
+    if (!opened.hasValue()) {
+      // 未提权时引擎必然打不开。但**已提权却打不开就是缺陷**，
+      // 不能因为「反正另一条路能过」就把它放过去。
+      QVERIFY2(!elevated.value(),
+               qPrintable(QStringLiteral("%1 后端已提权却打不开过滤器引擎：%2")
+                              .arg(backends.label, opened.error().message)));
+      QVERIFY2(!opened.error().message.trimmed().isEmpty(), "打开引擎失败必须给出非空说明");
+      qInfo().noquote() << QStringLiteral(
+                               "后端 %1：当前未提权，引擎打开后的行为本次未覆盖，"
+                               "用 sudo 再跑一遍才算完整")
+                               .arg(backends.label);
+      return;
+    }
+
+    QVERIFY2(engine.isOpen(), qPrintable(backends.label + " 后端打开之后仍然报告未打开"));
+
+    // 重复打开是幂等的，接口契约要求如此。
+    QVERIFY2(engine.open().hasValue(), qPrintable(backends.label + " 后端重复打开引擎失败"));
+
+    QVERIFY2(engine.close().hasValue(), qPrintable(backends.label + " 后端关闭引擎失败"));
+    QVERIFY2(!engine.isOpen(), qPrintable(backends.label + " 后端关闭之后仍然报告已打开"));
+
+    // 重复关闭同样幂等。
+    QVERIFY2(engine.close().hasValue(), qPrintable(backends.label + " 后端重复关闭引擎失败"));
+  });
+}
+
+void PlatformContractTest::filterEngineCleansUpOwnFiltersOnly() {
+  forEachBackend([](const Backends& backends) {
+    IFilterEngine& engine = *backends.first.filterEngine;
+    const Result<bool> elevated = backends.first.privilege->isElevated();
+    QVERIFY(elevated.hasValue());
+
+    if (!engine.open().hasValue()) {
+      QVERIFY2(!elevated.value(),
+               qPrintable(backends.label + " 后端已提权却打不开过滤器引擎，清理无从验证"));
+      return;
+    }
+
+    // 第一次可能清掉上次运行残留的自家过滤器，条数取决于机器状态，因此不做断言。
+    const Result<CleanupReport> first = engine.cleanupOrphans();
+    QVERIFY2(first.hasValue(),
+             qPrintable(QStringLiteral("%1 后端清理残留过滤器失败：%2")
+                            .arg(backends.label,
+                                 first.errorOrNull() ? first.error().message : QString())));
+    QVERIFY(first.value().removedOwn >= 0);
+
+    // 把「本次清掉了几条」打出来：以提权方式跑时，这一行就是「清理真的生效」的证据，
+    // 否则测试通过只能说明「调用没报错」。
+    if (first.value().removedOwn > 0) {
+      qInfo().noquote() << QStringLiteral("后端 %1：本次清掉 %2 条上次运行残留的过滤器")
+                               .arg(backends.label)
+                               .arg(first.value().removedOwn);
+    }
+
+    // 他方过滤器在结构上不可能被选中（枚举按自有 provider 限定），所以这个数必须是 0。
+    // 它一旦非零，说明有人改成了全量枚举再逐个判断 —— 那正是要防的写法。
+    QCOMPARE(first.value().skippedForeign, 0);
+
+    // 第二次必须一条都不剩：这才叫「清干净了」，而不是「清掉了一部分」。
+    const Result<CleanupReport> second = engine.cleanupOrphans();
+    QVERIFY(second.hasValue());
+    QCOMPARE(second.value().removedOwn, 0);
+
+    QVERIFY(engine.close().hasValue());
+  });
+}
+
+void PlatformContractTest::filterEngineRefusesWhatItCannotDo() {
+  forEachBackend([](const Backends& backends) {
+    IFilterEngine& engine = *backends.first.filterEngine;
+
+    // 引擎没打开时清理必须报错，而不是静默成功：
+    // 静默成功会让上层以为「已经清干净了」，带着一堆残留继续跑。
+    const Result<CleanupReport> closedState = engine.cleanupOrphans();
+    QVERIFY2(!closedState.hasValue(),
+             qPrintable(backends.label + " 后端在引擎未打开时清理却报了成功"));
+
+    const Result<bool> elevated = backends.first.privilege->isElevated();
+    QVERIFY(elevated.hasValue());
+    if (!engine.open().hasValue()) {
+      QVERIFY2(!elevated.value(), qPrintable(backends.label + " 后端已提权却打不开过滤器引擎"));
+      return;
+    }
+
+    // 声明与实际必须一致：能力位说不支持，接口就必须明确报「不支持」，
+    // 不允许悄悄成功，也不允许悄悄什么都不做。
+    if (!backends.first.capabilities->isSupported(Capability::FilterIPv4)) {
+      RuleSpec rule;
+      rule.id = QStringLiteral("contract-test-rule");
+      rule.conditions.append(
+          MatchCondition{QStringLiteral("proc"), QStringLiteral("any"), {}, false});
+
+      const Result<void> applied = engine.applyRule(rule);
+      QVERIFY2(!applied.hasValue(),
+               qPrintable(backends.label + " 后端声明不支持 IPv4 过滤，applyRule 却成功了"));
+      QVERIFY(applied.error().code == ErrorCode::NotSupported);
+      QVERIFY2(!applied.error().message.trimmed().isEmpty(), "不支持必须给出非空说明");
+    }
+
+    QVERIFY(engine.close().hasValue());
+  });
+}
+
+void PlatformContractTest::memoryFilterEngineRemovesSeededOrphans() {
+  // 真实后端在测试里造不出残留：那需要真的下发过滤器，而下发还没实现。
+  // 所以「清理确实把残留清掉了」只能在内存后端上验证 ——
+  // 这正是契约测试需要一个可控对照物的原因。
+  MemoryFilterEngine engine;
+  QVERIFY(engine.open().hasValue());
+
+  engine.seedOrphans(3);
+  QCOMPARE(engine.storedFilterCount(), 3);
+
+  const Result<CleanupReport> report = engine.cleanupOrphans();
+  QVERIFY(report.hasValue());
+  QCOMPARE(report.value().removedOwn, 3);
+  QCOMPARE(report.value().skippedForeign, 0);
+  QCOMPARE(engine.storedFilterCount(), 0);
+
+  // revokeAll 与清理走同一个原语，同样要清干净。
+  engine.seedOrphans(2);
+  QVERIFY(engine.revokeAll().hasValue());
+  QCOMPARE(engine.storedFilterCount(), 0);
 }
 
 QTEST_GUILESS_MAIN(PlatformContractTest)

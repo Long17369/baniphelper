@@ -11,6 +11,7 @@
 
 add_library(baniphelper_backend_impl STATIC
   backend.cpp
+  filter_engine.cpp
   privilege.cpp
   single_instance.cpp
 )
@@ -21,6 +22,7 @@ target_link_libraries(baniphelper_backend_impl PUBLIC
 )
 
 # shell32：提权重启用 ShellExecuteExW。
-target_link_libraries(baniphelper_backend_impl PRIVATE shell32)
+# fwpuclnt：WFP 用户态 API（FwpmEngineOpen0 等）。
+target_link_libraries(baniphelper_backend_impl PRIVATE shell32 fwpuclnt)
 
 baniphelper_enable_warnings(baniphelper_backend_impl)

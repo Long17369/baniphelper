@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "core/declared_capabilities.h"
+#include "platform/memory/filter_engine.h"
 #include "platform/memory/privilege.h"
 #include "platform/memory/single_instance.h"
 
@@ -17,8 +18,18 @@ PlatformBackend makeMemoryBackend(const QString& singleInstanceName) {
   declared.add(Capability::Elevation);
   declared.add(Capability::SingleInstance);
 
-  backend.capabilities = std::make_unique<DeclaredCapabilities>(backend.name, declared);
+  auto capabilities = std::make_unique<DeclaredCapabilities>(backend.name, declared);
+
+  // 与真实后端保持同一套说法：两个后端在界面上的表现必须一致，
+  // 否则「用内存后端先做界面」就失去了意义。
+  capabilities->setUnsupportedReason(Capability::FilterIPv4,
+                                     QStringLiteral("过滤器引擎的下发能力尚未实现，阶段二 S2.4"));
+  capabilities->setUnsupportedReason(Capability::FilterIPv6,
+                                     QStringLiteral("过滤器引擎的下发能力尚未实现，阶段二 S2.4"));
+
+  backend.capabilities = std::move(capabilities);
   backend.privilege = std::make_unique<MemoryPrivilege>();
+  backend.filterEngine = std::make_unique<MemoryFilterEngine>();
 
   const QString name =
       singleInstanceName.isEmpty() ? QString::fromLatin1(kSingleInstanceName) : singleInstanceName;

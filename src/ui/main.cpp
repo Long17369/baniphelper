@@ -66,6 +66,28 @@ int main(int argc, char* argv[]) {
                                 .arg(backend.value().privilege->elevationRequirementText());
   }
 
+  // 启动清理：收掉上次运行残留的自有过滤器。
+  //
+  // 过滤器在进程退出后仍然活在内核里，而崩溃与强杀都不会走退出路径，
+  // 因此「启动时先清一遍」是唯一能保证不残留的地方。
+  // 清理按自有 provider 限定，他方过滤器在结构上就不可能被误删。
+  //
+  // 失败只报告不阻断启动：带着残留过滤器启动的后果是旧规则仍在生效，
+  // 比打不开界面轻，而且用户需要看到界面才知道发生了什么。
+  const Result<void> engineOpened = backend.value().filterEngine->open();
+  if (!engineOpened) {
+    qWarning().noquote()
+        << QStringLiteral("打开过滤器引擎失败：%1").arg(engineOpened.error().message);
+  } else {
+    const Result<CleanupReport> cleanup = backend.value().filterEngine->cleanupOrphans();
+    if (!cleanup) {
+      qWarning().noquote() << QStringLiteral("清理残留过滤器失败：%1").arg(cleanup.error().message);
+    } else if (cleanup.value().removedOwn > 0) {
+      qInfo().noquote()
+          << QStringLiteral("已清掉 %1 条上次运行残留的过滤器").arg(cleanup.value().removedOwn);
+    }
+  }
+
   QQmlApplicationEngine engine;
 
   // QML 加载失败必须是显式失败，不允许留下一个「看起来启动了」的空进程。
