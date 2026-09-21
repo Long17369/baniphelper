@@ -29,6 +29,10 @@ baniphelper_add_test(capabilities baniphelper_capabilities_test
   capabilities_test.cpp
 )
 
+baniphelper_add_test(log baniphelper_log_test
+  log_test.cpp
+)
+
 # 契约测试要把同一套断言跑在真实后端与内存后端上，因此两边都要链。
 baniphelper_add_test(platform_contract baniphelper_platform_contract_test
   platform_contract_test.cpp

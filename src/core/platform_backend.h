@@ -7,6 +7,7 @@
 #include "core/icapabilities.h"
 #include "core/result.h"
 #include "platform/api/ifilterengine.h"
+#include "platform/api/ipaths.h"
 #include "platform/api/iprivilege.h"
 #include "platform/api/isingleinstance.h"
 
@@ -24,8 +25,8 @@ inline constexpr char kSingleInstanceName[] = "BanIPHelper.SingleInstance";
 /// 装配入口，平台实现反过来去实现它。若把声明放进 `platform/`，`core/` 就得反过来
 /// 依赖平台层，分层立刻失效。
 ///
-/// 目前装的是阶段一先做出来的成员，后续步骤按需要往里加
-/// （连接监视、字节统计、断连、会话事件、自启动、路径、目标解析）。
+/// 目前装的是已经做出来的成员，后续步骤按需要往里加
+/// （连接监视、字节统计、断连、会话事件、自启动、目标解析）。
 struct PlatformBackend {
   /// 后端标识，写进日志，例如 `win`、`memory`。不允许为空。
   QString name;
@@ -33,6 +34,12 @@ struct PlatformBackend {
   std::unique_ptr<IPrivilege> privilege;
   std::unique_ptr<ISingleInstance> singleInstance;
   std::unique_ptr<IFilterEngine> filterEngine;
+
+  /// 配置、数据库与日志目录。
+  ///
+  /// 日志必须在启动最早期就起来，而上层（`ui/`）不被允许直接问系统要路径，
+  /// 所以它只能从这里拿 —— 等不到配置子系统 S1.5 做完。
+  std::unique_ptr<IPaths> paths;
 
   /// 该后端声明具备哪些能力。上层据此决定哪些操作要置灰。
   std::unique_ptr<ICapabilities> capabilities;

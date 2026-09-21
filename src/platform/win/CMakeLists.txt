@@ -12,6 +12,7 @@
 add_library(baniphelper_backend_impl STATIC
   backend.cpp
   filter_engine.cpp
+  paths.cpp
   privilege.cpp
   single_instance.cpp
 )

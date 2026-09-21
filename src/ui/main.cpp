@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 
+#include "core/log.h"
 #include "core/platform_backend.h"
 #include "core/version.h"
 
@@ -36,6 +37,32 @@ int main(int argc, char* argv[]) {
   if (!backend.value().isComplete()) {
     return failWith(QStringLiteral("平台后端装配不完整，缺少必需的接口实现"));
   }
+
+  // 日志要在任何有意义的操作之前起来。程序是 GUI 子系统、没有控制台，
+  // 自己的记录与 Qt 内部消息除了文件没有第二个去处；晚一步起来，
+  // 前面发生的事就永久丢了 —— 而启动阶段恰好是最容易出问题的一段。
+  const Result<Paths> paths = backend.value().paths->resolve();
+  if (!paths) {
+    return failWith(QStringLiteral("解析应用目录失败：%1").arg(paths.error().message));
+  }
+  const Result<void> directories = backend.value().paths->ensureDirectories();
+  if (!directories) {
+    return failWith(QStringLiteral("准备应用目录失败：%1").arg(directories.error().message));
+  }
+
+  LogOptions logOptions;
+  logOptions.directory = paths.value().logDirectory;
+  const Result<void> logging = openLogging(logOptions);
+  if (!logging) {
+    // 走到这里说明路径或权限有问题。继续跑就会变成「什么都记不下来却毫无提示」。
+    return failWith(QStringLiteral("打开日志失败：%1").arg(logging.error().message));
+  }
+  installQtMessageHandler();
+
+  logWrite(LogLevel::Info,
+           QStringLiteral("BanIPHelper %1 启动，平台后端 %2")
+               .arg(QString::fromLatin1(versionString()), backend.value().name));
+  logWrite(LogLevel::Info, QStringLiteral("日志目录：%1").arg(paths.value().logDirectory));
 
   // 单实例。重复启动会各自下发一套过滤器，撤销时又互相不知道对方下过什么，
   // 最终在内核里留下一堆没人认领的过滤器。

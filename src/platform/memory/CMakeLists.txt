@@ -10,6 +10,7 @@
 add_library(baniphelper_platform_memory STATIC
   backend.cpp
   filter_engine.cpp
+  paths.cpp
   privilege.cpp
   single_instance.cpp
 )

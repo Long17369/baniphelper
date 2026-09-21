@@ -4,6 +4,7 @@
 
 #include "core/declared_capabilities.h"
 #include "platform/memory/filter_engine.h"
+#include "platform/memory/paths.h"
 #include "platform/memory/privilege.h"
 #include "platform/memory/single_instance.h"
 
@@ -30,6 +31,7 @@ PlatformBackend makeMemoryBackend(const QString& singleInstanceName) {
   backend.capabilities = std::move(capabilities);
   backend.privilege = std::make_unique<MemoryPrivilege>();
   backend.filterEngine = std::make_unique<MemoryFilterEngine>();
+  backend.paths = std::make_unique<MemoryPaths>();
 
   const QString name =
       singleInstanceName.isEmpty() ? QString::fromLatin1(kSingleInstanceName) : singleInstanceName;

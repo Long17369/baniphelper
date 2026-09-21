@@ -4,6 +4,7 @@
 
 #include "core/declared_capabilities.h"
 #include "platform/win/filter_engine.h"
+#include "platform/win/paths.h"
 #include "platform/win/privilege.h"
 #include "platform/win/single_instance.h"
 
@@ -31,6 +32,7 @@ Result<PlatformBackend> createPlatformBackend(const QString& singleInstanceName)
   backend.capabilities = std::move(capabilities);
   backend.privilege = std::make_unique<WinPrivilege>();
   backend.filterEngine = std::make_unique<WinFilterEngine>();
+  backend.paths = std::make_unique<WinPaths>();
 
   const QString name =
       singleInstanceName.isEmpty() ? QString::fromLatin1(kSingleInstanceName) : singleInstanceName;
