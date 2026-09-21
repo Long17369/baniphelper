@@ -1,11 +1,21 @@
-# 平台接口层：纯接口头文件，不含任何平台专有头。
+# 平台接口层：只描述「要做什么」，不描述「怎么做到」。
 #
-# 核心层与界面层只允许通过本层调用平台能力；平台接口一共十个，
-# 清单与职责见 docs/README.md 第 3.2 节，头文件在 S1.2 冻结。
+# 允许包含：core 的值类型头（types / rule / record / safety / config /
+#          capabilities / error / result）与 Qt 的基础类型。
+# 禁止包含：core 的 I*.h 接口头，以及任何平台专有头（windows.h、fwpmu.h 等）。
 #
-# 本目标暂时只有包含根，S1.2 起携带接口头文件。
+# 本目标的产物是头文件，但库里仍需要至少一个翻译单元，
+# 于是用 headers_selfcheck.cpp 把全部接口头文件编译一遍；
+# 它同时承担「接口必须是纯接口且不可复制」的静态断言。
+# 后续 S8.1 的契约测试套件也挂在这里。
 
-add_library(baniphelper_platform_api INTERFACE)
+add_library(baniphelper_platform_api STATIC
+  headers_selfcheck.cpp
+)
 add_library(BanIPHelper::PlatformApi ALIAS baniphelper_platform_api)
 
-target_include_directories(baniphelper_platform_api INTERFACE "${PROJECT_SOURCE_DIR}/src")
+target_include_directories(baniphelper_platform_api PUBLIC "${PROJECT_SOURCE_DIR}/src")
+
+target_link_libraries(baniphelper_platform_api PUBLIC BanIPHelper::Core)
+
+baniphelper_enable_warnings(baniphelper_platform_api)
