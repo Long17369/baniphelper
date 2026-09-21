@@ -376,6 +376,10 @@ void logWrite(LogLevel level, const QString& message) {
   processLogger().write(level, message);
 }
 
+void setLoggingLevel(LogLevel level) {
+  processLogger().setLevel(level);
+}
+
 void installQtMessageHandler() {
   qInstallMessageHandler(
       [](QtMsgType type, const QMessageLogContext& context, const QString& message) {

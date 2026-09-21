@@ -14,9 +14,11 @@ add_library(baniphelper_core STATIC
   capabilities.cpp
   capability_check.cpp
   capability_set.cpp
+  config_descriptors.cpp
   declared_capabilities.cpp
   error.cpp
   headers_selfcheck.cpp
+  json_config.cpp
   log.cpp
   platform_backend.cpp
   types.cpp

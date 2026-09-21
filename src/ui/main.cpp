@@ -5,6 +5,8 @@
 
 #include <cstdlib>
 
+#include "core/config_descriptors.h"
+#include "core/json_config.h"
 #include "core/log.h"
 #include "core/platform_backend.h"
 #include "core/version.h"
@@ -50,8 +52,54 @@ int main(int argc, char* argv[]) {
     return failWith(QStringLiteral("准备应用目录失败：%1").arg(directories.error().message));
   }
 
+  // 先读配置，再开日志：日志自己的可调项（级别、滚动阈值、保留天数、是否压缩）就住在配置里。
+  // 读配置过程中发生的自愈动作不能当场写日志（那会儿还没有日志），所以先收集，等日志起来再补写。
+  JsonConfig config;
+  const Result<void> configured = config.open(paths.value().configFile, defaultConfigDescriptors());
+  if (!configured) {
+    return failWith(QStringLiteral("打开配置失败：%1").arg(configured.error().message));
+  }
+
+  QStringList logProblems;
   LogOptions logOptions;
   logOptions.directory = paths.value().logDirectory;
+  {
+    const Result<QJsonValue> level = config.value(QString::fromLatin1(kConfigKeyLogLevel));
+    if (level) {
+      const Result<LogLevel> parsed = parseLogLevel(level.value().toString());
+      if (parsed) {
+        logOptions.level = parsed.value();
+      } else {
+        logProblems.append(parsed.error().message);
+      }
+    } else {
+      logProblems.append(level.error().message);
+    }
+
+    const Result<QJsonValue> rotate = config.value(QString::fromLatin1(kConfigKeyLogRotateBytes));
+    if (rotate) {
+      logOptions.rotateBytes = static_cast<qint64>(rotate.value().toDouble());
+    } else {
+      logProblems.append(rotate.error().message);
+    }
+
+    const Result<QJsonValue> retention =
+        config.value(QString::fromLatin1(kConfigKeyLogRetentionDays));
+    if (retention) {
+      logOptions.retentionDays = static_cast<int>(retention.value().toDouble());
+    } else {
+      logProblems.append(retention.error().message);
+    }
+
+    const Result<QJsonValue> compress =
+        config.value(QString::fromLatin1(kConfigKeyLogCompressRotated));
+    if (compress) {
+      logOptions.compressRotated = compress.value().toBool();
+    } else {
+      logProblems.append(compress.error().message);
+    }
+  }
+
   const Result<void> logging = openLogging(logOptions);
   if (!logging) {
     // 走到这里说明路径或权限有问题。继续跑就会变成「什么都记不下来却毫无提示」。
@@ -63,6 +111,48 @@ int main(int argc, char* argv[]) {
            QStringLiteral("BanIPHelper %1 启动，平台后端 %2")
                .arg(QString::fromLatin1(versionString()), backend.value().name));
   logWrite(LogLevel::Info, QStringLiteral("日志目录：%1").arg(paths.value().logDirectory));
+
+  // 配置层的自愈动作与读失败都要写出来。不写的话，用户只会看到
+  // 「设置怎么变回去了」或「日志级别改了没反应」，而找不到原因。
+  for (const QString& note : config.recoveryNotes()) {
+    logWrite(LogLevel::Warn, note);
+  }
+  for (const QString& problem : logProblems) {
+    logWrite(LogLevel::Warn, QStringLiteral("配置里的日志项不可用，已退回默认值：%1").arg(problem));
+  }
+
+  // 日志级别是唯一标成「不必重启」的配置项，改动必须当场生效 ——
+  // 否则为了抓一次现场得先关程序、改配置、再启动，现场早没了。
+  const Result<SubscriptionId> subscribed = config.subscribe([&config](const ConfigChange& change) {
+    const QString levelKey = QString::fromLatin1(kConfigKeyLogLevel);
+    const bool levelTouched = change.changedKeys.isEmpty() || change.changedKeys.contains(levelKey);
+    if (levelTouched) {
+      const Result<QJsonValue> level = config.value(levelKey);
+      if (level) {
+        const Result<LogLevel> parsed = parseLogLevel(level.value().toString());
+        if (parsed) {
+          setLoggingLevel(parsed.value());
+          logWrite(LogLevel::Info,
+                   QStringLiteral("日志级别已切到 %1").arg(logLevelName(parsed.value())));
+        }
+      }
+    }
+
+    // 需要重启才生效的项要说清楚，否则用户会以为「改了没反应」是坏了。
+    const QList<ConfigDescriptor> table = config.descriptors();
+    for (const QString& key : change.changedKeys) {
+      for (const ConfigDescriptor& descriptor : table) {
+        if (descriptor.key == key && descriptor.requiresRestart) {
+          logWrite(LogLevel::Warn, QStringLiteral("配置项 %1 已保存，需重启后生效").arg(key));
+        }
+      }
+    }
+  });
+  if (!subscribed) {
+    logWrite(LogLevel::Warn,
+             QStringLiteral("订阅配置变更失败，运行期间改配置不会立即生效：%1")
+                 .arg(subscribed.error().message));
+  }
 
   // 单实例。重复启动会各自下发一套过滤器，撤销时又互相不知道对方下过什么，
   // 最终在内核里留下一堆没人认领的过滤器。

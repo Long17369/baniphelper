@@ -116,6 +116,12 @@ void closeLogging();
 /// 真正的失误在 `openLogging` 那一步已经报过，不该让业务替它反复买单。
 void logWrite(LogLevel level, const QString& message);
 
+/// 调整进程级日志器的级别。
+///
+/// 应当在 `openLogging` 之后调用：打开时会按传入的 `LogOptions` 覆盖级别，
+/// 之前设的值不会保留。
+void setLoggingLevel(LogLevel level);
+
 /// 把 Qt 自身的消息接管进日志。
 ///
 /// 为什么必须做：程序是 GUI 子系统、没有控制台，Qt 内部消息
