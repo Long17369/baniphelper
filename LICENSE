@@ -1,14 +1,3 @@
-BanIPHelper
-Copyright (C) 2026 Long17369
-
-This document contains only the License of this project itself,
-namely the full text of the GNU General Public License Version 3 below.
-The licenses for third-party components (such as Qt, MinGW runtime libraries, etc.)
-are not included in this file and are listed collectively in the
-"Licenses for Third-party Components" section of README.md.
-
----------------------------------------------------------------------------
-
                     GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 
