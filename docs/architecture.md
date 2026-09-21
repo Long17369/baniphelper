@@ -119,8 +119,8 @@ Python 只用于 `tmp/` 下的一次性冒烟验证（例如确认 WFP 语义、
 **仅商业或 GPLv3** 的模块 —— Qt 官方文档的原话是这些模块不提供 LGPLv3 那一档
 （Qt Charts 自 6.10 起还被官方废弃，建议改用 Qt Graphs）。
 用到其中任何一个，整个程序就必须按 GPLv3 分发。既然两条都已在规划里，
-本项目定为 **`GPL-3.0-or-later`**，见根目录 [LICENSE](../LICENSE) 与
-[THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。
+本项目定为 **`GPL-3.0-or-later`**，见根目录 [LICENSE](../LICENSE)；
+各第三方组件及其许可集中列在 [README.md](../README.md) 的「第三方组件的许可」一节。
 其余模块（Core、Gui、Qml、Quick、QuickControls2、Svg、Sql、Network、Test）为 LGPLv3。
 反过来说，项目按 GPLv3 发布时，LGPLv3 那批模块的额外义务被更强的条款自动覆盖。
 

@@ -23,8 +23,8 @@
     [phases/02-filtering.md](phases/02-filtering.md) 第 2.1 节
 - **许可证已定为 `GPL-3.0-or-later`**，这不是偏好而是被依赖钉住的：
   `QtCharts` 与 `QtHTTPServer` 只有商业或 GPLv3 两档，没有 LGPLv3 可选。
-  GPLv3 全文在根目录 [LICENSE](../LICENSE)，第三方许可与履行方式在
-  [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)，
+  GPLv3 全文在根目录 [LICENSE](../LICENSE)，第三方组件的许可集中在
+  [README.md](../README.md) 的「第三方组件的许可」一节，
   决策经过见 [architecture.md](architecture.md) 第 2.2 节
 - 尚未写托盘外壳、日志、配置、数据库、规则下发与连接中断
 - 阶段划分为 S1 到 S8，步骤编号已稳定，新增只追加、作废不删除
