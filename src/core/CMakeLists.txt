@@ -18,6 +18,7 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Sql Network)
 
 add_library(baniphelper_core STATIC
+  ban_action.cpp
   capabilities.cpp
   capability_check.cpp
   capability_set.cpp

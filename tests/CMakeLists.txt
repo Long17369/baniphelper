@@ -45,6 +45,11 @@ baniphelper_add_test(types baniphelper_types_test
   types_test.cpp
 )
 
+# 「先封后断」的编排：只用假实现就能验，因此只链核心层。
+baniphelper_add_test(ban_action baniphelper_ban_action_test
+  ban_action_test.cpp
+)
+
 baniphelper_add_test(rule_model baniphelper_rule_model_test
   rule_model_test.cpp
 )

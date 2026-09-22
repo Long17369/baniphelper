@@ -44,6 +44,24 @@ QString freshInstanceName() {
          QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
+/// 造一个格式合法的连接标识。
+///
+/// ⚠️ 本地地址刻意用 TEST-NET-3（`203.0.113.0/24`）—— 它不可能真的是本机地址，
+/// 所以拿它去 `SetTcpEntry` 绝不可能误删一条真实连接。
+/// 契约测试跑在开发机上，这一点不能只靠「应该不会那么巧」。
+ConnectionKey makeConnectionKey(TransportProtocol protocol, AddressFamily family) {
+  const bool v4 = family == AddressFamily::V4;
+  ConnectionKey key;
+  key.protocol = protocol;
+  key.local.address.family = family;
+  key.local.address.text = v4 ? QStringLiteral("203.0.113.9") : QStringLiteral("2001:db8::9");
+  key.local.port = 51000;
+  key.remote.address.family = family;
+  key.remote.address.text = v4 ? QStringLiteral("223.5.5.5") : QStringLiteral("2001:db8::1");
+  key.remote.port = 443;
+  return key;
+}
+
 /// 同一实例名下的两份后端。
 ///
 /// 单实例的契约必须拿两份才能验证，而两份都要能独立构造，
@@ -99,6 +117,8 @@ class PlatformContractTest : public QObject {
   void filterEngineCleansUpOwnFiltersOnly();
   void filterEngineRefusesWhatItCannotDo();
   void memoryFilterEngineRemovesSeededOrphans();
+  void killerAnswersMatchDeclaredCapabilities();
+  void killerWillNotSilentlySucceed();
 };
 
 void PlatformContractTest::backendIsComplete() {
@@ -115,6 +135,7 @@ void PlatformContractTest::capabilityDeclarationMatchesImplementation() {
 
     QVERIFY2(backend.filterEngine != nullptr,
              qPrintable(backends.label + " 后端没有装配过滤器引擎"));
+    QVERIFY2(backend.killer != nullptr, qPrintable(backends.label + " 后端没有装配断连模块"));
 
     // 实现了某个接口，就必须把对应的能力位声明为支持。
     // 声明与实际不一致会让界面上出现「灰按钮但其实是能用的」，或反过来 ——
@@ -501,6 +522,106 @@ void PlatformContractTest::memoryFilterEngineRemovesSeededOrphans() {
   engine.seedOrphans(2);
   QVERIFY(engine.revokeAll().hasValue());
   QCOMPARE(engine.storedFilterCount(), 0);
+}
+
+/// 断连实现给出的答案必须与能力声明一致（S2.8）。
+///
+/// 这里刻意**不写死**「IPv6 断不了」这件事：那是本平台的现状，不是契约。
+/// 契约是「能断就得声明、声明了就得能断」—— 这样将来某个平台真的能断 IPv6 时，
+/// 这条断言会跟着它一起成立，而不用回来改测试。
+void PlatformContractTest::killerAnswersMatchDeclaredCapabilities() {
+  forEachBackend([](const Backends& backends) {
+    IKiller& killer = *backends.first.killer;
+    const ICapabilities& capabilities = *backends.first.capabilities;
+
+    const struct {
+      const char* label;
+      ConnectionKey key;
+      Capability capability;
+    } cases[] = {
+        {"IPv4 TCP",
+         makeConnectionKey(TransportProtocol::Tcp, AddressFamily::V4),
+         Capability::KillTcpV4},
+        {"IPv6 TCP",
+         makeConnectionKey(TransportProtocol::Tcp, AddressFamily::V6),
+         Capability::KillTcpV6},
+    };
+
+    for (const auto& one : cases) {
+      const Result<bool> canKill = killer.canKill(one.key);
+      QVERIFY2(canKill.hasValue(),
+               qPrintable(QStringLiteral("%1 后端无法判断 %2 能不能断：%3")
+                              .arg(backends.label,
+                                   QString::fromLatin1(one.label),
+                                   canKill.errorOrNull() ? canKill.error().message : QString())));
+      QVERIFY2(canKill.value() == capabilities.isSupported(one.capability),
+               qPrintable(
+                   QStringLiteral("%1 后端说 %2 的 canKill=%3，能力声明却是 %4 —— "
+                                  "声明与实际必须一致")
+                       .arg(backends.label, QString::fromLatin1(one.label))
+                       .arg(canKill.value() ? QStringLiteral("true") : QStringLiteral("false"))
+                       .arg(capabilities.isSupported(one.capability) ? QStringLiteral("支持")
+                                                                     : QStringLiteral("不支持"))));
+
+      // 声明不支持时，真去断必须明确报「不支持」并带上说明，不许静默成功。
+      if (!canKill.value()) {
+        const Result<void> attempted = killer.kill(one.key);
+        QVERIFY2(!attempted.hasValue(),
+                 qPrintable(QStringLiteral("%1 后端声称断不了 %2，kill 却报了成功")
+                                .arg(backends.label, QString::fromLatin1(one.label))));
+        QCOMPARE(attempted.error().code, ErrorCode::NotSupported);
+        QVERIFY2(!attempted.error().message.trimmed().isEmpty(),
+                 qPrintable(backends.label + " 后端对不支持的断连没给出说明"));
+      }
+    }
+  });
+}
+
+/// 批量断连必须逐条交代，而且不允许对做不到的事静默成功。
+void PlatformContractTest::killerWillNotSilentlySucceed() {
+  forEachBackend([](const Backends& backends) {
+    IKiller& killer = *backends.first.killer;
+
+    // UDP 没有连接可拆 —— 这一条与平台无关，任何实现都必须给 false。
+    const ConnectionKey udp = makeConnectionKey(TransportProtocol::Udp, AddressFamily::V4);
+    const Result<bool> udpCanKill = killer.canKill(udp);
+    QVERIFY(udpCanKill.hasValue());
+    QVERIFY2(!udpCanKill.value(),
+             qPrintable(backends.label + " 后端说 UDP 的「连接」可以断，UDP 没有连接可拆"));
+
+    const Result<void> udpKill = killer.kill(udp);
+    QVERIFY2(!udpKill.hasValue(), qPrintable(backends.label + " 后端对 UDP 的断连静默报了成功"));
+    QCOMPARE(udpKill.error().code, ErrorCode::NotSupported);
+    QVERIFY2(!udpKill.error().message.trimmed().isEmpty(), "不支持必须给出非空说明");
+
+    // 批量：混一条断不了的进去，每一条都要有交代。
+    // 「断了几条 + 几条失败 == 请求条数」是把「悄悄少断一条」堵死的那条断言。
+    const ConnectionKey v4 = makeConnectionKey(TransportProtocol::Tcp, AddressFamily::V4);
+    const Result<KillReport> batch = killer.killMany({v4, udp});
+    QVERIFY2(batch.hasValue(),
+             qPrintable(QStringLiteral("%1 后端批量断连整体失败：%2")
+                            .arg(backends.label,
+                                 batch.errorOrNull() ? batch.error().message : QString())));
+    QCOMPARE(batch.value().requested, 2);
+    QCOMPARE(batch.value().killed + static_cast<int>(batch.value().failures.size()), 2);
+
+    bool udpAccountedFor = false;
+    for (const KillFailure& failure : batch.value().failures) {
+      QVERIFY2(!failure.reason.trimmed().isEmpty(),
+               qPrintable(backends.label + " 后端给出了一条没有原因的断连失败"));
+      if (failure.connection == udp) {
+        udpAccountedFor = true;
+      }
+    }
+    QVERIFY2(udpAccountedFor, qPrintable(backends.label + " 后端没把断不了的 UDP 报成失败"));
+
+    // 空清单不该报错，也不该凭空多出条目。
+    const Result<KillReport> empty = killer.killMany({});
+    QVERIFY(empty.hasValue());
+    QCOMPARE(empty.value().requested, 0);
+    QCOMPARE(empty.value().killed, 0);
+    QCOMPARE(empty.value().failures.size(), 0);
+  });
 }
 
 QTEST_GUILESS_MAIN(PlatformContractTest)

@@ -7,6 +7,7 @@
 #include "core/icapabilities.h"
 #include "core/result.h"
 #include "platform/api/ifilterengine.h"
+#include "platform/api/ikiller.h"
 #include "platform/api/ipaths.h"
 #include "platform/api/iprivilege.h"
 #include "platform/api/isingleinstance.h"
@@ -26,7 +27,7 @@ inline constexpr char kSingleInstanceName[] = "BanIPHelper.SingleInstance";
 /// 依赖平台层，分层立刻失效。
 ///
 /// 目前装的是已经做出来的成员，后续步骤按需要往里加
-/// （连接监视、字节统计、断连、会话事件、自启动、目标解析）。
+/// （连接监视、字节统计、会话事件、自启动、目标解析）。
 struct PlatformBackend {
   /// 后端标识，写进日志，例如 `win`、`memory`。不允许为空。
   QString name;
@@ -34,6 +35,14 @@ struct PlatformBackend {
   std::unique_ptr<IPrivilege> privilege;
   std::unique_ptr<ISingleInstance> singleInstance;
   std::unique_ptr<IFilterEngine> filterEngine;
+
+  /// 连接中断（S2.8）。
+  ///
+  /// ⚠️ **不与 `filterEngine` 合在一起**，尽管两者总是被同一个动作一起用。
+  /// 理由是它们的可用性依赖不同的东西：过滤器引擎只需要提起过权，
+  /// 而断连在某些平台上根本做不到（IPv6 就是常态）。
+  /// 合成一个之后，「规则能下发但连接断不掉」这个状态就表达不出来了。
+  std::unique_ptr<IKiller> killer;
 
   /// 配置、数据库与日志目录。
   ///
