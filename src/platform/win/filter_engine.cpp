@@ -322,6 +322,14 @@ struct FilterDraft {
   QList<FWP_RANGE0> ranges;
   QList<FWP_BYTE_ARRAY16> addresses;
 
+  /// 自建的字节取值（后缀、目录前缀、区间的上下界）。
+  ///
+  /// `FWP_BYTE_BLOB` 里是**指针**，所以字节本体与那层结构体都得由这里保着：
+  /// `buffers` 装字节（`QByteArray` 的存储是堆上的，拷贝不会搬动它），
+  /// `blobs` 装结构体（`QList` 会重新分配，所以调用方先 `reserve` 到位）。
+  QList<QByteArray> buffers;
+  QList<FWP_BYTE_BLOB> blobs;
+
   /// 由 `FwpmGetAppIdFromFileName0` 分配，用完要 `FwpmFreeMemory0` 还回去。
   QList<void*> ownedAppIds;
 
@@ -344,10 +352,30 @@ struct FilterDraft {
   FilterDraft& operator=(const FilterDraft&) = delete;
 };
 
+/// `FWP_MATCH_PREFIX` / `FWP_MATCH_NOT_PREFIX`（阶段二 S2.11）。
+///
+/// ⚠️ **名字是误导性的**：它们判的是「以条件值结尾」，也就是**后缀**比较，
+/// 与前缀无关（微软文档原话：This flag has a misleading name. It tests whether the value
+/// ends with the condition value, i.e. it the suffix, not the prefix）。
+/// 文档同时写明 `FWP_BYTE_BLOB_TYPE`（装着字符串时）与 `FWP_UNICODE_STRING_TYPE`
+/// 支持这个匹配方式 —— 而应用标识正是一个装着字符串的 byte blob。
+///
+/// 本机实测（`tmp/inv-appid-match.txt`）：装着 `\connector.exe`（带结尾 NUL）的这条
+/// 过滤器能拦住任意目录下的同名程序，去掉结尾 NUL 就一条都拦不住。
+///
+/// 数值为什么写在这里：MinGW 的 `fwptypes.h` 里 `FWP_MATCH_TYPE` 到
+/// `FWP_MATCH_NOT_EQUAL = 10` 就结束了（`FWP_MATCH_TYPE_MAX` 还是过时的 11），
+/// 没有这两个成员。与层 GUID 那次一样，只能把数值写进代码；
+/// 取值按文档里的枚举顺序（紧跟 `FWP_MATCH_NOT_EQUAL`）。
+constexpr FWP_MATCH_TYPE kMatchSuffix = static_cast<FWP_MATCH_TYPE>(11);
+constexpr FWP_MATCH_TYPE kMatchNotSuffix = static_cast<FWP_MATCH_TYPE>(12);
+
 /// 一个条件在取值池里要占多少位置。先算清楚，才能一次 `reserve` 到位。
 struct DraftSizes {
   int ranges = 0;
   int addresses = 0;
+  int blobs = 0;
+  int buffers = 0;
 };
 
 DraftSizes measureConditions(const QList<FilterCondition>& conditions) {
@@ -363,6 +391,23 @@ DraftSizes measureConditions(const QList<FilterCondition>& conditions) {
         break;
       case FilterField::Port:
         ++sizes.ranges;
+        break;
+      case FilterField::AppPath:
+        switch (condition.appPathMatch) {
+          case AppPathMatch::Exact:
+            break;
+          case AppPathMatch::Suffix:
+            ++sizes.blobs;
+            ++sizes.buffers;
+            break;
+          case AppPathMatch::Directory:
+            // 不取反：一段区间；取反：补集是两段区间。
+            // 宁多不少 —— 少了会导致中途重新分配，先前取到的地址全部作废。
+            sizes.ranges += 2;
+            sizes.blobs += 4;
+            sizes.buffers += 4;
+            break;
+        }
         break;
       default:
         break;
@@ -394,6 +439,148 @@ Result<FWP_BYTE_BLOB*> appIdFor(FilterDraft& draft, const QString& path) {
 
   draft.ownedAppIds.append(blob);
   return blob;
+}
+
+/// 把一段自己造的字节交给 draft 保管，返回可直接放进 `FWP_VALUE0` 的 blob。
+///
+/// `FwpmFilterAdd0` 只读这些内存、不接管，所以它们必须活到那次调用结束（见 FilterDraft）。
+FWP_BYTE_BLOB* storeBlob(FilterDraft& draft, const QByteArray& bytes) {
+  draft.buffers.append(bytes);
+  FWP_BYTE_BLOB blob{};
+  blob.size = static_cast<UINT32>(draft.buffers.last().size());
+  blob.data = const_cast<UINT8*>(reinterpret_cast<const UINT8*>(draft.buffers.last().constData()));
+  draft.blobs.append(blob);
+  return &draft.blobs.last();
+}
+
+/// UTF-16 文本 → 小写化后的字节，按需补结尾 NUL。
+///
+/// ## 为什么必须小写
+///
+/// 应用标识是**全小写**的：`FwpmGetAppIdFromFileName0` 返回的设备路径写作
+/// `\device\harddiskvolume6\...`，而系统里这个设备名本身是 `\Device\HarddiskVolume6`。
+/// 也就是说这一层自己会把路径小写化，而 blob 的比较是**逐字节**的
+/// （`FWP_MATCH_EQUAL_CASE_INSENSITIVE` 只支持 `FWP_UNICODE_STRING_TYPE`，不支持 blob）。
+///
+/// 后果很不对等：我们只要把字面量也小写化，用户写 `*\Chrome.exe` 还是
+/// `*\chrome.exe` 都能命中；反过来（不小写化）则**一条都命中不了，而过滤器照样
+/// 加得进去、不报任何错** —— 正是本项目最怕的「看着生效、实际留缝」。
+/// 两个方向都实测过，见 `tmp/inv-appid-match.txt`。
+///
+/// 用 `LCMapStringEx` + 不变区域，而不是自己转 ASCII：路径里可能有非 ASCII 字符。
+Result<QByteArray> lowercasedUtf16(const QString& text, bool withNul) {
+  if (text.isEmpty()) {
+    return Result<QByteArray>::fail(
+        makeError(ErrorCode::InvalidArgument, QStringLiteral("要小写化的文本为空")));
+  }
+
+  const int length = text.size();
+  QByteArray result(length * 2 + (withNul ? 2 : 0), '\0');
+  const int written = ::LCMapStringEx(LOCALE_NAME_INVARIANT,
+                                      LCMAP_LOWERCASE,
+                                      reinterpret_cast<const wchar_t*>(text.utf16()),
+                                      length,
+                                      reinterpret_cast<wchar_t*>(result.data()),
+                                      length,
+                                      nullptr,
+                                      nullptr,
+                                      0);
+  if (written != length) {
+    return Result<QByteArray>::fail(platformError(
+        QStringLiteral("把「%1」小写化").arg(text), ::GetLastError(), L"LCMapStringEx"));
+  }
+
+  return Result<QByteArray>::ok(result);
+}
+
+/// 目录在应用标识上的**字典序下界**：目录的 NT 设备路径，小写化，以分隔符结尾，不带 NUL。
+///
+/// ## 为什么用句柄而不是 `FwpmGetAppIdFromFileName0`
+///
+/// 那个 API **不接受目录路径**（实测：带尾分隔符给 `ERROR_PATH_NOT_FOUND`、
+/// 不带给 `ERROR_ACCESS_DENIED`）。另一种可行的取法是「在目录里建一个临时空文件、
+/// 拿它的应用标识截到目录」—— 实测两种取法给出的字节**完全一致**
+/// （`tmp/inv-appid-dir.txt`）。这里用句柄：不往用户的目录里写东西。
+/// 代价是拿到的是卷上记录的大小写，需要自己小写化（与 `lowercasedUtf16` 同一个理由），
+/// 而且解析的是连接点 / 符号链接**之后**的形态。网络路径（UNC）上的行为尚未实测。
+///
+/// ## 为什么必须以分隔符结尾
+///
+/// 区间是 `[下界, 上界)`，上界取下界末位加一。若下界是 `...\games\A`（没有尾分隔符），
+/// 上界就成了 `...\games\A` 末位加一，区间会把**名字更长**的邻居
+/// `...\games\AB\...` 一起圈进来 —— 误伤。实测的对照组正是这个：
+/// 上界写成「目录名末位加一」时 `ab` 被误伤，写成「分隔符加一」时不会
+/// （`tmp/inv-appid-retest.txt`）。
+Result<QByteArray> directoryFloor(const QString& directory) {
+  if (directory.isEmpty()) {
+    return Result<QByteArray>::fail(
+        makeError(ErrorCode::InvalidArgument, QStringLiteral("目录路径为空")));
+  }
+
+  const std::wstring wide(reinterpret_cast<const wchar_t*>(directory.utf16()),
+                          static_cast<std::size_t>(directory.size()));
+  HANDLE handle = ::CreateFileW(wide.c_str(),
+                                FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr,
+                                OPEN_EXISTING,
+                                FILE_FLAG_BACKUP_SEMANTICS,
+                                nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return Result<QByteArray>::fail(platformError(
+        QStringLiteral("打开目录「%1」").arg(directory), ::GetLastError(), L"CreateFileW"));
+  }
+
+  std::vector<wchar_t> buffer(4096, L'\0');
+  const DWORD length = ::GetFinalPathNameByHandleW(
+      handle, buffer.data(), static_cast<DWORD>(buffer.size()), VOLUME_NAME_NT);
+  ::CloseHandle(handle);
+  if (length == 0 || length >= buffer.size()) {
+    return Result<QByteArray>::fail(
+        platformError(QStringLiteral("取目录「%1」的设备路径").arg(directory),
+                      ::GetLastError(),
+                      L"GetFinalPathNameByHandleW"));
+  }
+
+  QString ntPath = QString::fromWCharArray(buffer.data(), static_cast<int>(length));
+  auto bytes = lowercasedUtf16(ntPath, false);
+  if (!bytes) {
+    return bytes;
+  }
+
+  QByteArray result = bytes.value();
+  // 末尾补分隔符：用户写目录时带不带尾分隔符都合法（存储层刻意不改写用户写的路径），
+  // 而区间必须有它才不会误伤名字更长的邻居。
+  const bool endsWithSeparator = result.size() >= 2 &&
+                                 static_cast<quint8>(result.at(result.size() - 2)) == 0x5C &&
+                                 static_cast<quint8>(result.at(result.size() - 1)) == 0x00;
+  if (!endsWithSeparator) {
+    result.append('\\');
+    result.append('\0');
+  }
+  return Result<QByteArray>::ok(result);
+}
+
+/// 末位 UTF-16 码元加一，用作字典序区间的上界。
+///
+/// 下界以分隔符结尾时，这个上界正好是「所有以该前缀开头的字符串」的紧上界。
+Result<QByteArray> bumpedLastUnit(const QByteArray& bytes) {
+  if (bytes.size() < 2) {
+    return Result<QByteArray>::fail(
+        makeError(ErrorCode::Internal, QStringLiteral("区间下界太短，算不出上界")));
+  }
+  QByteArray result = bytes;
+  const int offset = result.size() - 2;
+  const quint16 unit = static_cast<quint16>(static_cast<quint8>(result.at(offset))) |
+                       (static_cast<quint16>(static_cast<quint8>(result.at(offset + 1))) << 8);
+  if (unit == 0xFFFF) {
+    return Result<QByteArray>::fail(makeError(
+        ErrorCode::Internal, QStringLiteral("目录名的末位字符是 U+FFFF，算不出区间上界")));
+  }
+  const quint16 bumped = static_cast<quint16>(unit + 1);
+  result[offset] = static_cast<char>(bumped & 0xFF);
+  result[offset + 1] = static_cast<char>((bumped >> 8) & 0xFF);
+  return Result<QByteArray>::ok(result);
 }
 
 /// 把一个地址写进 WFP 取值。
@@ -463,15 +650,89 @@ Result<void> appendWfpCondition(FilterDraft& draft,
                                             "或者改用地址、端口来限定范围")));
       }
 
-      auto blob = appIdFor(draft, condition.appPath);
-      if (!blob) {
-        return Result<void>::fail(blob.error());
-      }
       wfp.fieldKey = conditionKeyFor(FilterField::AppPath, entry.stage);
-      wfp.matchType = condition.negate ? FWP_MATCH_NOT_EQUAL : FWP_MATCH_EQUAL;
-      wfp.conditionValue.type = FWP_BYTE_BLOB_TYPE;
-      wfp.conditionValue.byteBlob = blob.value();
-      break;
+
+      if (condition.appPathMatch == AppPathMatch::Exact) {
+        auto blob = appIdFor(draft, condition.appPath);
+        if (!blob) {
+          return Result<void>::fail(blob.error());
+        }
+        wfp.matchType = condition.negate ? FWP_MATCH_NOT_EQUAL : FWP_MATCH_EQUAL;
+        wfp.conditionValue.type = FWP_BYTE_BLOB_TYPE;
+        wfp.conditionValue.byteBlob = blob.value();
+        break;
+      }
+
+      if (condition.appPathMatch == AppPathMatch::Suffix) {
+        // 通配 `*<字面量>` ⟺ 「路径以该字面量结尾」。
+        // 结尾 NUL 必须有：实测不带 NUL 的写法一条都命中不了（应用标识是带 NUL 的）。
+        auto bytes = lowercasedUtf16(condition.appPath, true);
+        if (!bytes) {
+          return Result<void>::fail(bytes.error());
+        }
+        wfp.matchType = condition.negate ? kMatchNotSuffix : kMatchSuffix;
+        wfp.conditionValue.type = FWP_BYTE_BLOB_TYPE;
+        wfp.conditionValue.byteBlob = storeBlob(draft, bytes.value());
+        break;
+      }
+
+      // 目录：应用标识上的一段字典序区间。
+      auto floorBytes = directoryFloor(condition.appPath);
+      if (!floorBytes) {
+        return Result<void>::fail(floorBytes.error());
+      }
+      auto ceilingBytes = bumpedLastUnit(floorBytes.value());
+      if (!ceilingBytes) {
+        return Result<void>::fail(ceilingBytes.error());
+      }
+
+      if (!condition.negate) {
+        FWP_RANGE0 range{};
+        range.valueLow.type = FWP_BYTE_BLOB_TYPE;
+        range.valueLow.byteBlob = storeBlob(draft, floorBytes.value());
+        range.valueHigh.type = FWP_BYTE_BLOB_TYPE;
+        range.valueHigh.byteBlob = storeBlob(draft, ceilingBytes.value());
+        draft.ranges.append(range);
+
+        wfp.matchType = FWP_MATCH_RANGE;
+        wfp.conditionValue.type = FWP_RANGE_TYPE;
+        wfp.conditionValue.rangeValue = &draft.ranges.last();
+        break;
+      }
+
+      // 取反：补集是「比下界小」与「比上界大」两段。
+      // 同字段多条件的语义是「或」，两段拼起来正好是补集 —— 所以这里**刻意多追加一个条件**，
+      // 本函数因此会往 `draft.conditions` 里放两个。
+      //
+      // 两段的界都是自造的：下界用一个 U+0000 码元（任何真实路径都以「\」开头，比它大），
+      // 上界用八个 U+FFFF 码元（比任何真实路径都大）。区间两端都是闭的，
+      // 而这两个端点取值本身不是任何程序的应用标识，所以闭区不影响结果。
+      QByteArray zeroUnit(2, '\0');
+      QByteArray infinityUnit(16, static_cast<char>(0xFF));
+
+      FWP_RANGE0 below{};
+      below.valueLow.type = FWP_BYTE_BLOB_TYPE;
+      below.valueLow.byteBlob = storeBlob(draft, zeroUnit);
+      below.valueHigh.type = FWP_BYTE_BLOB_TYPE;
+      below.valueHigh.byteBlob = storeBlob(draft, floorBytes.value());
+      draft.ranges.append(below);
+
+      FWP_RANGE0 above{};
+      above.valueLow.type = FWP_BYTE_BLOB_TYPE;
+      above.valueLow.byteBlob = storeBlob(draft, ceilingBytes.value());
+      above.valueHigh.type = FWP_BYTE_BLOB_TYPE;
+      above.valueHigh.byteBlob = storeBlob(draft, infinityUnit);
+      draft.ranges.append(above);
+
+      wfp.matchType = FWP_MATCH_RANGE;
+      wfp.conditionValue.type = FWP_RANGE_TYPE;
+      wfp.conditionValue.rangeValue = &draft.ranges[draft.ranges.size() - 2];
+      draft.conditions.append(wfp);
+
+      FWPM_FILTER_CONDITION0 secondRange = wfp;
+      secondRange.conditionValue.rangeValue = &draft.ranges.last();
+      draft.conditions.append(secondRange);
+      return Result<void>::ok();
     }
 
     case FilterField::RemoteAddress: {
@@ -537,6 +798,8 @@ Result<unsigned long long> addFilterForEntry(
   // 先把取值池按算好的个数留够，之后填进去的元素地址才稳定。
   draft.ranges.reserve(sizes.ranges);
   draft.addresses.reserve(sizes.addresses);
+  draft.blobs.reserve(sizes.blobs);
+  draft.buffers.reserve(sizes.buffers);
 
   for (const FilterCondition& condition : entry.conditions) {
     auto appended = appendWfpCondition(draft, entry, condition);

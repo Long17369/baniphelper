@@ -31,6 +31,9 @@ struct RuleValues {
   QList<QString> appPaths;
   bool appPathNegated = false;
 
+  /// 程序域取值怎么解读。一个域只有一个条件，所以整个域共用一种形态。
+  AppPathMatch appPathMatch = AppPathMatch::Exact;
+
   QList<AddressSpan> addresses;
   bool addressNegated = false;
 
@@ -51,18 +54,92 @@ struct RuleValues {
 // 域求值器
 // ---------------------------------------------------------------------------
 
+/// 通配写法能不能只靠**一次**比较表达。
+///
+/// 系统对应用标识只能做逐字节比较，其中那个叫 `FWP_MATCH_PREFIX` 的匹配方式
+/// **实际判的是「以后缀结尾」**（文档原话：名字误导，测的是后缀），支持 byte blob。
+/// 于是：
+///
+/// * `*字面量`（开头一个 `*`、其余全是字面量）⟺ 「路径以该字面量结尾」，**精确等价**；
+/// * 别的写法都不行。`C:\tools\*` 是「前缀 + 任意」，系统没有前缀匹配；
+///   `C:\a\*.exe` 是「前缀 ∧ 后缀」，而在同一个字段上放两个条件语义是「或」，
+///   拼出来的结果会**比规则宽** —— 这正是最危险的方向；`?` 也不行。
+///
+/// 表达不出来的就当场报错并说清改写什么，不静默丢一部分。
+Result<QString> suffixOfWildcard(const QString& pattern) {
+  constexpr QChar kWildcard = QLatin1Char('*');
+  constexpr QChar kSingle = QLatin1Char('?');
+
+  if (pattern.isEmpty()) {
+    return makeError(ErrorCode::InvalidArgument, QStringLiteral("通配模式为空"));
+  }
+  if (pattern.contains(kSingle)) {
+    return Result<QString>::fail(
+        unsupportedError(QStringLiteral("带「?」的通配模式（%1）").arg(pattern),
+                         QStringLiteral("系统对程序路径只能做「后缀是不是这一串」的比较，"
+                                        "而「?」要求「这一位是任意一个字符」，两者拼不到一起。"
+                                        "请把「?」改成确定字符，或者改用目录方式")));
+  }
+  const int first = pattern.indexOf(kWildcard);
+  const int last = pattern.lastIndexOf(kWildcard);
+  if (first == -1) {
+    return Result<QString>::fail(
+        unsupportedError(QStringLiteral("不带通配符的通配模式（%1）").arg(pattern),
+                         QStringLiteral("这种写法没有任何通配符。想封单个文件请用「精确」方式")));
+  }
+  if (first != last) {
+    return Result<QString>::fail(unsupportedError(
+        QStringLiteral("用了不止一个「*」的通配模式（%1）").arg(pattern),
+        QStringLiteral("系统只能做「后缀是不是这一串」的比较，两个「*」中间夹一段字面量"
+                       "表达不出来。请改成开头一个「*」（如 *\\程序名.exe），"
+                       "或者改用目录方式")));
+  }
+  if (first != 0) {
+    // 只差「* 不在开头」：它仍然等价于「前缀」，系统同样表达不出来。
+    return Result<QString>::fail(unsupportedError(
+        QStringLiteral("「*」不在开头的通配模式（%1）").arg(pattern),
+        QStringLiteral("系统能表达的是「路径以某串字面量结尾」，也就是开头一个「*」。"
+                       "想封住某个目录下的全部程序，请改用目录方式")));
+  }
+
+  const QString literal = pattern.mid(1);
+  if (literal.isEmpty()) {
+    // 只写一个「*」等于「任意文件」，这不是通配，是另一个意思。
+    return Result<QString>::fail(unsupportedError(
+        QStringLiteral("只写一个「*」的通配模式"),
+        QStringLiteral("它表示「任意程序」，要表达这个意思请用全匹配方式（any）")));
+  }
+  return Result<QString>::ok(literal);
+}
+
 Result<void> evaluateProc(const MatchCondition& condition, RuleValues& values) {
   const MatchMode mode = parseMode(condition.mode).value();
   if (mode == MatchMode::Any) {
     return Result<void>::ok();
   }
-  if (mode == MatchMode::Wildcard || mode == MatchMode::Dir) {
-    // 这两种要先把「系统里有哪些程序」变成确定的路径列表才能落成过滤器。
-    // 阶段二把它们排在 S2.11 与 S2.12，在那之前如实报不支持。
-    return Result<void>::fail(unsupportedError(
-        QStringLiteral("程序域的「%1」匹配").arg(modeTitle(mode)),
-        QStringLiteral(
-            "要先知道系统里有哪些程序才能落成确定的过滤器，计划在 S2.11 与 S2.12 落地")));
+
+  if (mode == MatchMode::Wildcard) {
+    for (const QString& value : condition.values) {
+      auto suffix = suffixOfWildcard(value);
+      if (!suffix) {
+        return Result<void>::fail(suffix.error());
+      }
+      values.appPaths.append(suffix.value());
+    }
+    values.appPathMatch = AppPathMatch::Suffix;
+    values.appPathNegated = condition.negate;
+    return Result<void>::ok();
+  }
+
+  if (mode == MatchMode::Dir) {
+    // 目录不需要展开成文件清单：它落成应用标识上的一段字典序区间，
+    // 整个子树（含以后新放进去的）自动覆盖。见 filter_plan.h 里 AppPathMatch 的说明。
+    for (const QString& value : condition.values) {
+      values.appPaths.append(value);
+    }
+    values.appPathMatch = AppPathMatch::Directory;
+    values.appPathNegated = condition.negate;
+    return Result<void>::ok();
   }
 
   for (const QString& value : condition.values) {
@@ -250,6 +327,18 @@ const char* filterFieldName(FilterField field) noexcept {
   return "";
 }
 
+const char* appPathMatchName(AppPathMatch match) noexcept {
+  switch (match) {
+    case AppPathMatch::Exact:
+      return "exact";
+    case AppPathMatch::Suffix:
+      return "suffix";
+    case AppPathMatch::Directory:
+      return "directory";
+  }
+  return "";
+}
+
 Result<FilterPlan> expandRule(const RuleSpec& rule) {
   // 先走一遍 S2.1 的整规则校验：空条件、同域重复、取值不合法都在那里拦。
   // 不假设调用方一定校验过 —— 展开器的入参来自配置、数据库或界面。
@@ -339,6 +428,7 @@ Result<FilterPlan> expandRule(const RuleSpec& rule) {
         condition.field = FilterField::AppPath;
         condition.negate = values.appPathNegated;
         condition.appPath = appPath;
+        condition.appPathMatch = values.appPathMatch;
         entry.conditions.append(condition);
       }
       for (const AddressSpan& span : slice.spans) {

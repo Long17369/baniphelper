@@ -76,6 +76,33 @@ enum class FilterField : std::uint8_t {
 /// 字段的英文代号，供日志与测试输出使用。
 [[nodiscard]] const char* filterFieldName(FilterField field) noexcept;
 
+/// 程序字段的匹配形态（阶段二 S2.11 / S2.12）。
+///
+/// 程序字段在系统里是「应用标识」这么一个字节串（装着可执行文件的 NT 设备路径，
+/// **全小写**、末尾带 NUL）。系统只能对它做逐字节比较，没有「按目录」或
+/// 「按通配」的原生说法 —— 所以两种不确定的写法得翻成确定的条件：
+///
+/// | 形态 | 规则里的写法 | 落到系统里是什么 |
+/// | --- | --- | --- |
+/// | `Exact` | `exact` / `set` | 路径 → 应用标识，相等比较 |
+/// | `Suffix` | `wildcard` 里的 `*字面量` | **后缀**比较（系统那个匹配方式名字是误导性的，见实现） |
+/// | `Directory` | `dir` | 应用标识的**字典序区间**：整个目录（含子目录） |
+///
+/// 为什么不去枚举目录内容做快照：快照之外的程序**静默漏掉**，
+/// 而「看着生效、实际留缝」是本项目最怕的失败方式。区间是原生的，
+/// 以后放进目录的程序自动覆盖（实测见 docs/phases/02-filtering.md 第 3.12 节）。
+enum class AppPathMatch : std::uint8_t {
+  /// `appPath` 是可执行文件全路径。
+  Exact,
+  /// `appPath` 是路径后缀，对应通配写法 `*<后缀>`。
+  Suffix,
+  /// `appPath` 是目录路径，覆盖它以及它下面任意深度的全部程序。
+  Directory,
+};
+
+/// 形态的英文代号，供日志与测试输出使用。
+[[nodiscard]] const char* appPathMatchName(AppPathMatch match) noexcept;
+
 /// 一个已定型的过滤条件。
 ///
 /// 取值都在这里，但**只有一个字段有效**（由 `field` 决定），其余保持默认值。
@@ -95,8 +122,11 @@ struct FilterCondition {
   /// 规则会比预期**封得宽**，是这类错误里最难发现的方向。
   bool negate = false;
 
-  /// `AppPath` 用。
+  /// `AppPath` 用。路径本身（含义由 `appPathMatch` 决定）。
   QString appPath;
+
+  /// `AppPath` 用。`appPath` 怎么解读。
+  AppPathMatch appPathMatch = AppPathMatch::Exact;
 
   /// `RemoteAddress` 用。两端同族，起点不大于终点；两端相同表示单个地址。
   AddressSpan address;
@@ -161,10 +191,11 @@ inline constexpr int kMaxConditionsPerField = 256;
 /// 展开做的事就是本文件开头列的那四个维度。取反不求补；集合型取值一律拆成
 /// 一条一个取值。
 ///
-/// 目前只支持 `proc` 域的 `exact` / `set` / `any`。`wildcard` 与 `dir`
-/// 需要先知道「系统里有哪些程序」才能落成确定的过滤器，属于
-/// [phases/02-filtering.md](../../../docs/phases/02-filtering.md) 的 S2.11 与 S2.12；
-/// 在那之前遇到它们一律返回 `ErrorCode::NotSupported` 并说明。
+/// 程序域的五个方式都支持，但 `wildcard` 只支持**能精确表达**的写法：
+/// 一个开头 `*` 后面全是字面量（`*\chrome.exe` 这种），它等价于「后缀是这个字面量」。
+/// 其余写法（`C:\tools\*`、`C:\a\*.exe`、`*ch?me.exe` 等）一律报
+/// `ErrorCode::NotSupported` 并说明该改写什么 —— 它们没法只用一次比较表达，
+/// 而用多次比较拼（前缀 ∧ 后缀）在同字段上会变成「或」，语义会变宽。
 /// **不静默跳过**：跳过的后果是规则看上去下发了、实际没封。
 [[nodiscard]] Result<FilterPlan> expandRule(const RuleSpec& rule);
 
@@ -176,7 +207,7 @@ inline constexpr int kMaxConditionsPerField = 256;
 /// | 字段 | 该字段的条件数 | 取反 | 处理 |
 /// | --- | --- | --- | --- |
 /// | 地址、端口、协议 | 任意 | 是 | **求补**，换成补集里的正向取值 |
-/// | 程序 | 1 | 是 | 原样保留，交给平台的不等匹配 |
+/// | 程序 | 1 | 是 | 原样保留，交给平台的匹配方式（相等、后缀、区间各自有对应写法） |
 /// | 程序 | 多个 | 是 | **报错**：算不出补集，而多值只能「或」，`≠A 或 ≠B` 恒真 |
 /// | 任意 | 任意 | 否 | 原样保留，同字段多条件本来就是「或」 |
 ///

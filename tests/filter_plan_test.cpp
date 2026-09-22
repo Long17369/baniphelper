@@ -104,7 +104,8 @@ class FilterPlanTest : public QObject {
   void conditionsAreOrderedAndUniquePerField();
   void negatedMultipleValuesStayOnOneFilter();
   void actionAndPriorityFollowTheRule();
-  void wildcardAndDirectoryAreNotSupportedYet();
+  void wildcardAndDirectoryAreExpanded();
+  void unsupportedWildcardFormsAreRejected();
   void invalidConditionsAreRejected();
   void oversizedPlanIsRejected();
   void expansionIsDeterministic();
@@ -124,6 +125,10 @@ void FilterPlanTest::nameTablesCoverEveryValue() {
                                   FilterField::Port,
                                   FilterField::Protocol}) {
     QVERIFY2(QByteArray(filterFieldName(field)).size() > 0, "字段缺英文代号");
+  }
+  for (const AppPathMatch match :
+       {AppPathMatch::Exact, AppPathMatch::Suffix, AppPathMatch::Directory}) {
+    QVERIFY2(QByteArray(appPathMatchName(match)).size() > 0, "程序字段形态缺英文代号");
   }
 }
 
@@ -399,29 +404,92 @@ void FilterPlanTest::actionAndPriorityFollowTheRule() {
   }
 }
 
-void FilterPlanTest::wildcardAndDirectoryAreNotSupportedYet() {
-  // 这两种要先把「系统里有哪些程序」落成确定的路径列表才能拆，属 S2.11 与 S2.12。
-  // 关键是**明确报不支持**而不是跳过：跳过的后果是规则看着下发了、实际没封。
-  struct Case {
-    const char* mode;
-    const char* value;
-  };
-  const Case cases[] = {
-      {"wildcard", "C:\\Tools\\*\\tool.exe"},
-      {"dir", "C:\\Tools\\bin"},
+void FilterPlanTest::wildcardAndDirectoryAreExpanded() {
+  // 通配只支持「开头一个 `*`、其余全是字面量」的写法（S2.11）：
+  // 它与「路径以该字面量结尾」完全等价，而系统那个叫 PREFIX 的匹配方式恰好是后缀比较。
+  const auto wildcard = expandRule(makeSpec({
+      makeCondition(QStringLiteral("proc"),
+                    QStringLiteral("wildcard"),
+                    QStringList{QStringLiteral("*\\tool.exe")}),
+      makeCondition(QStringLiteral("direction"), QStringLiteral("out")),
+  }));
+  QVERIFY2(wildcard.hasValue(), qPrintable(errorText(wildcard)));
+  // 方向只限出站、地址不限 → 出站连接层上 IPv4 与 IPv6 各一条。
+  QCOMPARE(wildcard.value().entries.size(), 2);
+  for (const FilterPlanEntry& entry : wildcard.value().entries) {
+    const FilterCondition* suffix = conditionOf(entry, FilterField::AppPath);
+    QVERIFY(suffix != nullptr);
+    QVERIFY(suffix->appPathMatch == AppPathMatch::Suffix);
+    // 落下来的是去掉 `*` 之后的字面量，`*` 本身不进条件。
+    QCOMPARE(suffix->appPath, QStringLiteral("\\tool.exe"));
+  }
+
+  // 目录不需要展开成文件清单（S2.12）：它落成应用标识上一段字典序区间，
+  // 以后放进目录的程序自动覆盖。所以这里只断言**目录原样保留**，
+  // 至于区间怎么算属于平台层的事。
+  const auto directory = expandRule(makeSpec({
+      makeCondition(QStringLiteral("proc"),
+                    QStringLiteral("dir"),
+                    QStringList{QStringLiteral("D:\\Games\\A")}),
+      makeCondition(QStringLiteral("direction"), QStringLiteral("out")),
+  }));
+  QVERIFY2(directory.hasValue(), qPrintable(errorText(directory)));
+  QCOMPARE(directory.value().entries.size(), 2);
+  const FilterCondition* folder =
+      conditionOf(directory.value().entries.first(), FilterField::AppPath);
+  QVERIFY(folder != nullptr);
+  QVERIFY(folder->appPathMatch == AppPathMatch::Directory);
+  QCOMPARE(folder->appPath, QStringLiteral("D:\\Games\\A"));
+
+  // 取反的单值目录要能过：补集是两段区间，平台层能表达（实测）。
+  const auto negatedDirectory = expandRule(makeSpec({
+      makeCondition(QStringLiteral("proc"),
+                    QStringLiteral("dir"),
+                    QStringList{QStringLiteral("D:\\Games\\A")},
+                    true),
+      makeCondition(QStringLiteral("direction"), QStringLiteral("out")),
+  }));
+  QVERIFY2(negatedDirectory.hasValue(), qPrintable(errorText(negatedDirectory)));
+  const auto resolved = resolveNegation(negatedDirectory.value().entries.first());
+  QVERIFY2(resolved.hasValue(), qPrintable(errorText(resolved)));
+  QCOMPARE(resolved.value().conditions.size(), 1);
+  // 单值取反原样带着标记往下传，由平台层决定怎么表达。
+  QVERIFY(resolved.value().conditions.first().negate);
+  QVERIFY(resolved.value().conditions.first().appPathMatch == AppPathMatch::Directory);
+}
+
+void FilterPlanTest::unsupportedWildcardFormsAreRejected() {
+  // 这些写法都不是「一次后缀比较」能表达的，必须当场报错 ——
+  // 而**不能**用多个条件去拼：同一个字段上的多个条件语义是「或」，
+  // 拼出来的结果会比规则**宽**，那是最危险的方向。
+  const QStringList patterns{
+      QStringLiteral("C:\\Tools\\*"),      // 「*」在末尾（前缀语义）
+      QStringLiteral("C:\\Tools\\*.exe"),  // 前缀 ∧ 后缀
+      QStringLiteral("*ch?me.exe"),        // 「?」
+      QStringLiteral("*a*b.exe"),          // 两个「*」
+      QStringLiteral("*"),                 // 只会变成「任意程序」
+      QStringLiteral("C:\\Tools\\a.exe"),  // 根本没写通配符
   };
 
-  for (const Case& one : cases) {
-    const auto plan =
-        expandRule(makeSpec({makeCondition(QStringLiteral("proc"),
-                                           QString::fromLatin1(one.mode),
-                                           QStringList{QString::fromLatin1(one.value)})}));
-    QVERIFY2(!plan.hasValue(), one.mode);
-    QVERIFY2(plan.error().code == ErrorCode::NotSupported, one.mode);
-    QVERIFY2(!plan.error().message.trimmed().isEmpty(), one.mode);
-    // 说明里要指出这是「还没做」而不是「做不到」，否则用户会去找替代方案。
-    QVERIFY2(plan.error().message.contains(QStringLiteral("S2.1")), one.mode);
+  for (const QString& pattern : patterns) {
+    const auto plan = expandRule(makeSpec({
+        makeCondition(QStringLiteral("proc"), QStringLiteral("wildcard"), QStringList{pattern}),
+        makeCondition(QStringLiteral("direction"), QStringLiteral("out")),
+    }));
+    QVERIFY2(!plan.hasValue(), qPrintable(pattern));
+    QCOMPARE(plan.error().code, ErrorCode::NotSupported);
+    QVERIFY2(!plan.error().message.trimmed().isEmpty(), qPrintable(pattern));
   }
+
+  // 目录那两种写法里，「*」在末尾或只写一个「*」的，说明里要指出改用目录方式。
+  const auto trailing = expandRule(makeSpec({
+      makeCondition(QStringLiteral("proc"),
+                    QStringLiteral("wildcard"),
+                    QStringList{QStringLiteral("C:\\Tools\\*")}),
+      makeCondition(QStringLiteral("direction"), QStringLiteral("out")),
+  }));
+  QVERIFY(!trailing.hasValue());
+  QVERIFY2(trailing.error().message.contains(QStringLiteral("目录")), "该提示改用目录方式");
 }
 
 void FilterPlanTest::invalidConditionsAreRejected() {
