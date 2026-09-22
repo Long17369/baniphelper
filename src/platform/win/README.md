@@ -11,7 +11,7 @@
 | `IKiller` | `SetTcpEntry`，初期仅 IPv4 |
 | `ISessionMonitor` | ETW |
 | `IPrivilege` | 管理员令牌检查 |
-| `ISingleInstance` | 命名 Mutex |
+| `ISingleInstance` | 命名 Mutex（所有权）+ 命名管道（唤起与接收端） |
 | `IAutoStart` | 计划任务 |
 | `IPaths` | `%APPDATA%\BanIPHelper` |
 

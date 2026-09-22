@@ -23,6 +23,7 @@ add_library(baniphelper_core STATIC
   headers_selfcheck.cpp
   json_config.cpp
   log.cpp
+  main_thread_dispatch.cpp
   platform_backend.cpp
   types.cpp
   version.cpp

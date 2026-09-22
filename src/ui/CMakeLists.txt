@@ -1,6 +1,8 @@
-# 界面：Qt Quick
-
-find_package(Qt6 REQUIRED COMPONENTS Quick)
+# 界面：Qt Quick 做主界面，Widgets 只用于托盘（architecture.md 第 1.3 节与第 2.1 节）。
+#
+# Svg 是为了能从矢量图加载托盘与窗口图标。图标必须随可执行文件走：
+# 程序是提权启动的，不会去读项目目录，图片资源只能编进二进制。
+find_package(Qt6 REQUIRED COMPONENTS Quick Widgets Svg)
 
 # REQUIRES 把 Qt 6.8 之前引入的策略全部设为 NEW，避免 QTP0001/QTP0004 之类
 # 的开发者警告长期堆积。
@@ -18,6 +20,7 @@ endif()
 
 qt_add_executable(baniphelper
   main.cpp
+  app_shell.cpp
   ${BANIPHELPER_WINDOWS_RESOURCES}
 )
 
@@ -38,8 +41,20 @@ qt_add_qml_module(baniphelper
     qml/Main.qml
 )
 
+# 图标编进可执行文件，而不是放到 exe 旁边当数据文件：
+# 托盘图标在谁也没有打开任何文件的情况下就得能用，
+# 而「少拷了一个文件」正是分发时最容易出现的失误。
+qt_add_resources(baniphelper "baniphelper_icons"
+  PREFIX "/"
+  BASE "assets"
+  FILES
+    assets/baniphelper.svg
+)
+
 target_link_libraries(baniphelper PRIVATE
   Qt6::Quick
+  Qt6::Widgets
+  Qt6::Svg
   BanIPHelper::Core
   BanIPHelper::PlatformApi
   BanIPHelper::Backend

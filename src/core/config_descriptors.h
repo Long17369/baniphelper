@@ -27,4 +27,10 @@ inline constexpr char kConfigKeyLogRotateBytes[] = "log.rotate_bytes";
 inline constexpr char kConfigKeyLogRetentionDays[] = "log.retention_days";
 inline constexpr char kConfigKeyLogCompressRotated[] = "log.compress_rotated";
 
+/// 退出行为组的键。
+///
+/// `architecture.md` 第 7.2 节里它写作 `revoke_on_exit`，这里按 S1.5 定下的
+/// 「键名带命名空间前缀」规则改为 `shutdown.revoke_on_exit`，改由已在第 3.4 节记过。
+inline constexpr char kConfigKeyShutdownRevokeOnExit[] = "shutdown.revoke_on_exit";
+
 }  // namespace baniphelper::core

@@ -91,6 +91,9 @@ class PlatformContractTest : public QObject {
   void singleInstanceRecoversAfterRelease();
   void releaseIsIdempotent();
   void signalWithoutHolderIsNotSilentSuccess();
+  void activationReachesTheHolder();
+  void activationHandlerCanBeReplaced();
+  void activationStopsAfterStopListening();
   void memoryPrivilegeCoversUnelevatedBranch();
   void filterEngineOpensAndClosesIdempotently();
   void filterEngineCleansUpOwnFiltersOnly();
@@ -237,7 +240,7 @@ void PlatformContractTest::releaseIsIdempotent() {
 
 void PlatformContractTest::signalWithoutHolderIsNotSilentSuccess() {
   forEachBackend([](const Backends& backends) {
-    // 实例名是刚生成的，没有任何人持有它。
+    // 实例名是刚生成的，没有任何人持有它，也没有任何人开接收端。
     const Result<void> signaled = backends.first.singleInstance->signalExisting();
 
     QVERIFY2(!signaled.hasValue(),
@@ -246,6 +249,91 @@ void PlatformContractTest::signalWithoutHolderIsNotSilentSuccess() {
                         "结果是新旧两个窗口都不见了"));
     QVERIFY(signaled.error().code == ErrorCode::NotFound);
     QVERIFY2(!signaled.error().message.trimmed().isEmpty(), "失败必须带非空说明");
+  });
+}
+
+void PlatformContractTest::activationReachesTheHolder() {
+  forEachBackend([](const Backends& backends) {
+    ISingleInstance& holder = *backends.first.singleInstance;
+    ISingleInstance& latecomer = *backends.second.singleInstance;
+
+    const Result<bool> acquired = holder.acquire();
+    QVERIFY(acquired.hasValue() && acquired.value());
+
+    int activations = 0;
+    const Result<void> listening = holder.listenForActivation([&activations]() { ++activations; });
+    QVERIFY2(listening.hasValue(),
+             qPrintable(QStringLiteral("%1 后端建立接收端失败：%2")
+                            .arg(backends.label,
+                                 listening.errorOrNull() ? listening.error().message : QString())));
+    QCOMPARE(activations, 0);
+
+    const Result<void> signaled = latecomer.signalExisting();
+    QVERIFY2(signaled.hasValue(),
+             qPrintable(QStringLiteral("%1 后端唤不起已经开了接收端的实例：%2")
+                            .arg(backends.label,
+                                 signaled.errorOrNull() ? signaled.error().message : QString())));
+
+    // 投递是异步的（实现负责送到主线程），所以等而不是当场断言。
+    QTRY_COMPARE_WITH_TIMEOUT(activations, 1, 5000);
+
+    holder.stopListening();
+  });
+}
+
+void PlatformContractTest::activationHandlerCanBeReplaced() {
+  forEachBackend([](const Backends& backends) {
+    ISingleInstance& holder = *backends.first.singleInstance;
+    ISingleInstance& latecomer = *backends.second.singleInstance;
+
+    const Result<bool> acquired = holder.acquire();
+    QVERIFY(acquired.hasValue() && acquired.value());
+
+    int oldHandlerCalls = 0;
+    int newHandlerCalls = 0;
+    QVERIFY(holder.listenForActivation([&oldHandlerCalls]() { ++oldHandlerCalls; }).hasValue());
+    QVERIFY(holder.listenForActivation([&newHandlerCalls]() { ++newHandlerCalls; }).hasValue());
+
+    QVERIFY(latecomer.signalExisting().hasValue());
+    QTRY_COMPARE_WITH_TIMEOUT(newHandlerCalls, 1, 5000);
+
+    // 旧的处理函数必须已经被换掉。两个都活着的话，一次唤起会把界面拿起来两遍。
+    QCOMPARE(oldHandlerCalls, 0);
+
+    holder.stopListening();
+  });
+}
+
+void PlatformContractTest::activationStopsAfterStopListening() {
+  forEachBackend([](const Backends& backends) {
+    ISingleInstance& holder = *backends.first.singleInstance;
+    ISingleInstance& latecomer = *backends.second.singleInstance;
+
+    const Result<bool> acquired = holder.acquire();
+    QVERIFY(acquired.hasValue() && acquired.value());
+
+    int activations = 0;
+    QVERIFY(holder.listenForActivation([&activations]() { ++activations; }).hasValue());
+
+    holder.stopListening();
+    // 重复停止同样是幂等的，退出路径可能被走两次。
+    holder.stopListening();
+
+    const Result<void> signaled = latecomer.signalExisting();
+    QVERIFY2(
+        !signaled.hasValue(),
+        qPrintable(backends.label +
+                   " 后端在接收端已停之后仍然报唤起成功 —— 调用方会以为界面出来了然后自己退出"));
+    QVERIFY(signaled.error().code == ErrorCode::NotFound);
+
+    // 手工放行一次事件循环，确认没有哪一次投递被压在队列里。
+    QTest::qWait(50);
+    QCOMPARE(activations, 0);
+
+    // 空处理函数要当场拒掉，不能建出一个「收了请求但什么也不做」的黑洞。
+    const Result<void> empty = holder.listenForActivation(ActivationHandler());
+    QVERIFY(!empty.hasValue());
+    QVERIFY(empty.error().code == ErrorCode::InvalidArgument);
   });
 }
 

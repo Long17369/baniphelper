@@ -92,12 +92,18 @@ flowchart LR
 | `IKiller` | 指定连接的中断 | S2、S5 |
 | `ISessionMonitor` | 系统事件订阅 | S3 |
 | `IPrivilege` | 提权检测与申请 | 全部 |
-| `ISingleInstance` | 单实例保证 | S1 |
+| `ISingleInstance` | 单实例保证：取得所有权、唤起既有实例、**接收端** | S1 |
 | `IAutoStart` | 开机自启注册与撤销 | S7 |
 | `IPaths` | 配置与数据目录 | 全部 |
 
 冻结含义：**签名与语义不再变，实现可以没有**。任何轨道若发现接口需要变更，
 走第 6 节的变更控制流程，而不是就地改。
+
+已发生的接口变更记录如下（每一次都要在两个后端与契约测试同步落地）：
+
+| 时间 | 接口 | 变更 | 触发原因 |
+| --- | --- | --- | --- |
+| 2026-09-22 | `ISingleInstance` | 增加 `listenForActivation` 与 `stopListening` | S1.3 冻结时只写了发送端，接收端一直没有入口；S1.8 的托盘外壳要当接收端，而接收端只能落在 `platform/` 下。见 [phases/01-foundation.md](phases/01-foundation.md) 第 3.1 节的 S1.16 |
 
 ### 3.3 汇合点与里程碑
 

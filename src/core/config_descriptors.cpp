@@ -83,10 +83,33 @@ QList<ConfigDescriptor> logDescriptors() {
   return list;
 }
 
+/// 退出行为组。
+///
+/// 目前只有一项，但它很关键：关掉它，本程序下发的过滤器会在进程退出后**留在内核里继续生效**。
+/// 这也是本程序与「退出即恢复」类工具最容易被误用的分界线，因此对话框里必须写清楚。
+QList<ConfigDescriptor> shutdownDescriptors() {
+  QList<ConfigDescriptor> list;
+
+  ConfigDescriptor revoke = makeDescriptor(
+      QString::fromLatin1(kConfigKeyShutdownRevokeOnExit),
+      ConfigValueType::Boolean,
+      QStringLiteral("退出时撤销全部过滤器"),
+      QStringLiteral("打开时进程退出即恢复网络；关掉后已下发的封禁会在退出后继续留在内核里，"
+                     "包括重启之后。关掉它之前先确认自己不会被封在外面。"),
+      QJsonValue(true));
+  // 托盘菜单里的勾选项就是它，改动当场生效，不需要重启。
+  revoke.requiresRestart = false;
+  list.append(revoke);
+
+  return list;
+}
+
 }  // namespace
 
 QList<ConfigDescriptor> defaultConfigDescriptors() {
-  return logDescriptors();
+  QList<ConfigDescriptor> descriptors = logDescriptors();
+  descriptors.append(shutdownDescriptors());
+  return descriptors;
 }
 
 }  // namespace baniphelper::core

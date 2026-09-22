@@ -443,6 +443,12 @@ Windows 的 Winsock raw socket 有硬限制（官方文档原文）：
 
 ### 7.2 配置项（每一项都要能在 WebUI 里改）
 
+下表是**规划中的全集**。真正生效的清单是代码里的配置描述符表
+（`src/core/config_descriptors.h`），只有被消费的项才会进去。
+描述符表里的键名一律带命名空间前缀，因此本表里的名字在落地时会写作
+`webui.listen_port`、`record.retention_days` 这样的形式；
+已经落地的项直接把本表的键名改成了带前缀的写法（见 `shutdown.revoke_on_exit`）。
+
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
 | `listen_address` | `127.0.0.1` | 绑定地址 |
@@ -451,7 +457,7 @@ Windows 的 Winsock raw socket 有硬限制（官方文档原文）：
 | `record_connections` | 开 | 是否记录新出现的连接 |
 | `record_retention_days` | 7 | 记录保留期 |
 | `sample_interval_ms` | 1000 | 采样间隔，无界面时自动降频 |
-| `revoke_on_exit` | 开 | 退出时是否撤销全部 filter |
+| `shutdown.revoke_on_exit` | 开 | 退出时是否撤销全部 filter（托盘菜单里的勾选项就是它） |
 | `whitelist_mode` | 关 | 白名单模式 |
 | `whitelist_rollback_seconds` | 60 | 超时自动回滚秒数 |
 

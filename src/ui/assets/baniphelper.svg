@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  应用图标，同时用于托盘与窗口。
+
+  形态刻意做得极简：托盘图标在 Windows 上实际只有 16 像素见方，
+  渐变、细描边与阴影到那个尺寸都会糊成一团。这里只有一个实心盾牌
+  加一个白色的禁止符，缩到 16 像素仍能看出「挡住」这个意思。
+
+  阶段五 S5 做界面时若定了视觉规范，这里替换成正式图标即可。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <path d="M32 3.2 58 13.4v19.2c0 14.9-10.6 24.8-26 28.3C16.6 57.4 6 47.5 6 32.6V13.4Z"
+        fill="#2f6fed"/>
+  <circle cx="32" cy="31.5" r="11.4" fill="none" stroke="#ffffff" stroke-width="6"/>
+  <line x1="24" y1="23.5" x2="40" y2="39.5" stroke="#ffffff" stroke-width="6"
+        stroke-linecap="round"/>
+</svg>

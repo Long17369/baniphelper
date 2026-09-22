@@ -1,8 +1,16 @@
 #pragma once
 
+#include <functional>
+
 #include "core/result.h"
 
 namespace baniphelper::core {
+
+/// 收到「有人要唤起本实例」时的处理函数。
+///
+/// 会被实现投递到**主线程**执行，调用方不必自己再做一次线程投递。
+/// 之所以把这条写进契约：界面只能在主线程动，而这个回调天然来自别的线程或别的进程。
+using ActivationHandler = std::function<void()>;
 
 /// 单实例保证。
 ///
@@ -33,7 +41,29 @@ class ISingleInstance {
   [[nodiscard]] virtual Result<bool> acquire() = 0;
 
   /// 唤起既有实例的界面，然后本进程应当退出。
+  ///
+  /// 只有在**既有实例已经开了接收端**（`listenForActivation`）时才可能成功。
+  /// 没有接收端时必须失败，不允许静默成功 —— 那会让本进程直接退出，
+  /// 用户看到的却是新旧两个窗口都不见了。
   [[nodiscard]] virtual Result<void> signalExisting() = 0;
+
+  /// 开始接收唤起请求。
+  ///
+  /// 契约要点：
+  ///
+  /// - 只建立通道，**不改变所有权**：先 `acquire` 再监听，顺序反了也不会互相干扰；
+  /// - 重复调用是安全的，后注册的 handler 替换先前的；
+  /// - handler 由实现在**主线程**调用（见 `ActivationHandler`）；
+  /// - 传入空的 handler 必须当场以 `ErrorCode::InvalidArgument` 失败，
+  ///   不能建出一个「收了请求但什么也不做」的黑洞；
+  /// - 建立失败必须显式报错。若实现悄无声息地建不起来，二次启动的用户看到的是
+  ///   「双击了但既有窗口没出来，第二个进程也退了」，且没有任何解释。
+  [[nodiscard]] virtual Result<void> listenForActivation(ActivationHandler handler) = 0;
+
+  /// 停止接收。可重复调用，也应在析构与退出路径上调用。
+  ///
+  /// 停止之后 `signalExisting` 必须失败（通道已不在），不允许继续报成功。
+  virtual void stopListening() noexcept = 0;
 
   /// 释放所有权。必须在正常退出路径上调用；不抛异常。
   virtual void release() noexcept = 0;
