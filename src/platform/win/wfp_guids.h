@@ -18,7 +18,7 @@ namespace baniphelper::core {
 ///
 /// ## 值的出处
 ///
-/// 两个来源逐字比对一致（比对脚本见 `tmp/extract-fwpmu.ps1`）：
+/// 两个来源逐字比对一致（用一个一次性脚本把两边的常量都抽出来逐条比）：
 ///
 /// 1. Windows SDK 的 `um/fwpmu.h`，取自 win32metadata 仓库（微软自有）：
 ///    `https://github.com/microsoft/win32metadata/blob/main/generation/`
@@ -32,7 +32,7 @@ namespace baniphelper::core {
 ///
 /// SDK 头里有些字面量不补前导零（例如 `0xa62` 而不是 `0x0a62`、`0x8c7` 而不是
 /// `0x08c7`）。当初抽出 `FWPM_CONDITION_ALE_PACKAGE_ID` 时因此得到过一个畸形 GUID，
-/// 是按**固定宽度补零**重抽才对的。要复核本表，务必用 `tmp/extract-fwpmu.ps1`，
+/// 是按**固定宽度补零**重抽才对的。要复核本表，务必用脚本从两个来源重新抽一遍，
 /// 不要手工从头上誊。
 ///
 /// ## 为什么不用官方名字当标识符

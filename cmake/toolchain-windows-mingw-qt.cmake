@@ -6,8 +6,6 @@
 # 依赖两个环境变量：
 #   BANIPHELPER_QTDIR      Qt 套件根目录，其下须有 lib/cmake/Qt6/Qt6Config.cmake
 #   BANIPHELPER_MINGW_BIN  Qt 自带 MinGW 的 bin 目录
-#
-# 本机取值见 tmp/env-local.md（不入库）。
 
 if(NOT CMAKE_HOST_WIN32)
   message(FATAL_ERROR
@@ -18,7 +16,7 @@ foreach(_bh_var BANIPHELPER_QTDIR BANIPHELPER_MINGW_BIN)
   if(NOT DEFINED ENV{${_bh_var}} OR "$ENV{${_bh_var}}" STREQUAL "")
     message(FATAL_ERROR
       "环境变量 ${_bh_var} 未设置，无法定位 Qt 套件自带的工具链。\n"
-      "本机取值见 tmp/env-local.md（不入库），Git Bash 下设置示例：\n"
+      "Git Bash 下设置示例：\n"
       "  export ${_bh_var}=<路径>")
   endif()
 endforeach()

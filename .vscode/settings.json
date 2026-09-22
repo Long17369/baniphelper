@@ -28,7 +28,7 @@
   // 于是 GPL 正文产生 18 条误报：编号条款被读成有序列表，type `show w' 被读成代码跨度。
   //
   // 注意 .markdownlintignore 挡不住这件事：实测把文件显式交给 markdownlint-cli2 时，
-  // 忽略表里的条目（连 tmp/ 在内）照样会被 lint。真正生效的是这里的语言归属。
+  // 忽略表里的条目照样会被 lint。真正生效的是这里的语言归属。
   "files.associations": {
     "LICENSE": "plaintext"
   }

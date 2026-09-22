@@ -22,9 +22,9 @@
 | WFP 头文件 | `fwpmu.h`、`fwptypes.h`、`tcpestats.h`、`iphlpapi.h`、`tcpmib.h`、`evntrace.h` | 全部存在，不需要 Windows SDK。**但 `fwpmu.h` 不含 `FWPM_LAYER_*` 与 `FWPM_CONDITION_*` 常量**，这两类 GUID 要自己维护，见第 10 节 |
 | WFP 导入库 | `libfwpuclnt.a`、`libiphlpapi.a`、`libws2_32.a`、`libwevtapi.a` | 全部存在 |
 | 抓包 | Npcap 已装，WinDivert 未装 | 需要时再引 WinDivert |
-| 其他 | Python 3 与 Node 已装 | Python 仅用于 `tmp/` 下的一次性冒烟验证，不入库 |
+| 其他 | Python 3 与 Node 已装 | Python 仅用于一次性冒烟验证（脚本不入库），**不作为产品代码** |
 
-> **本机的绝对路径、版本号与构建命令见环境文档**（放在 `tmp/` 下，不入库）。
+> **本机的绝对路径、版本号与构建命令由开发者自行记录，不入库**。
 > 本文档只保留与机器无关的约束。
 >
 > **已核对**：工具链中内核态 WFP 的头文件缺失，而用户态 WFP 的头文件与导入库齐全，
@@ -32,7 +32,7 @@
 
 ### 0.1 工作约定
 
-- 临时文件一律放 `workspace/tmp/`（即 `d:\FDM\baniphelper\tmp\`），不放 `%TEMP%`
+- 临时文件一律不入库，也不放系统临时目录
 - 需要澄清时**优先用提问工具**，不在正文里追问
 - 终端环境不限于 PowerShell，可用 git bash / cmd / WSL；**若要切换，先在本企划书里写明**
 
@@ -75,7 +75,7 @@
 > ⚠️ **不要用系统里另一套 MinGW 去链 Qt**（例如开发环境自带的 gcc）。
 > 两套 MinGW 的 CRT 与运行时可能不一致，全项目统一使用 Qt 套件自带的那一套。
 
-Python 只用于 `tmp/` 下的一次性冒烟验证（例如确认 WFP 语义、验证 eStats 能否读到值），
+Python 只用于一次性冒烟验证（例如确认 WFP 语义、验证 eStats 能否读到值，脚本不入库），
 **不作为产品代码**。
 
 ---
@@ -514,7 +514,7 @@ Windows 的 Winsock raw socket 有硬限制（官方文档原文）：
 - IPv6 在阶段二即支持**封禁**（过滤层都有 IPv6 版本），只是「断」降级为丢包卡死
 
 > 阶段一起就直接用 C++ 与 Qt，不做「先写原型再迁移」。
-> 但 WFP 语义、eStats 可读性、ETW 字段这类**不确定点**，允许在 `tmp/` 下写一次性脚本先验证。
+> 但 WFP 语义、eStats 可读性、ETW 字段这类**不确定点**，允许先写一次性脚本验证（未入库）。
 
 ---
 

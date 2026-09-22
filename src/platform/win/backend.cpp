@@ -21,7 +21,7 @@ Result<PlatformBackend> createPlatformBackend(const QString& singleInstanceName)
   // 声明了却做不到，比不声明更糟：用户会以为功能可用，点下去才发现不行。
   //
   // `FilterIPv4` / `FilterIPv6` 在 S2.4 落地：规则能翻成过滤器并用事务提交、
-  // 能按规则撤销、重复下发幂等，都已实测（tmp/drill-s2.4.cpp）。
+  // 能按规则撤销、重复下发幂等，都已实测（一次性端到端演练，不入库）。
   // 这两个能力位说的是**下发**，至于「封得住」由阶段二的 S2.5 与 S2.6 分别验收。
   //
   // `OrphanCleanup` 其实 S1.7 就实现了（启动时清掉上次运行残留的自家过滤器，

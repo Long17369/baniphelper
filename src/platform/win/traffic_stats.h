@@ -20,7 +20,7 @@ namespace baniphelper::core {
 /// UDP **没有**对应的按连接接口（本机头文件里只有 `tcpestats.h`，没有 UDP 版），
 /// 所以 `TrafficStatsUdp` 不声明，UDP 的字节数留给 S3.4 的事件源。
 ///
-/// 六条实测结论（都在 `tmp/probe-estats.cpp` 里跑出来的，写实现前必须知道）：
+/// 六条实测结论（都由一个一次性探针跑出来，写实现前必须知道）：
 ///
 /// | 项 | 结论 |
 /// | --- | --- |

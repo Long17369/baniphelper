@@ -29,8 +29,7 @@ namespace baniphelper::core {
 // 给一条 Windows 防火墙规则填两个远程地址，导出的 WFP 结果是**一条** filter，
 // 里面 FWPM_CONDITION_IP_REMOTE_ADDRESS 出现了两次；再用一条只列到其中一个地址的
 // 出站阻止规则去连那个地址，确实连不上 —— 若多条件是「与」，那条规则恒为假，
-// 根本拦不住任何东西。复现脚本见 `tmp/probe-fw-multivalue.ps1` 与
-// `tmp/probe-fw-or-semantics.ps1`。
+// 根本拦不住任何东西。复现这两个对照实验要各跑一个一次性脚本（未入库）。
 //
 // ⚠️ 但**取反不能这样合并**。`addr ∉ {A, B}` 写成「≠A 或 ≠B」是恒真的，
 // 等于把地址条件整个丢掉，规则会比预期**封得宽** —— 这是最容易发生又最难发现的错误。

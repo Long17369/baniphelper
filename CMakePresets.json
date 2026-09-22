@@ -9,7 +9,7 @@
     {
       "name": "qt-mingw",
       "displayName": "Qt 套件自带 MinGW",
-      "description": "需要环境变量 BANIPHELPER_QTDIR 与 BANIPHELPER_MINGW_BIN，本机取值见 tmp/env-local.md",
+      "description": "需要环境变量 BANIPHELPER_QTDIR 与 BANIPHELPER_MINGW_BIN，工具链用 Qt 套件自带的 MinGW",
       "hidden": true,
       "generator": "Ninja",
       "toolchainFile": "${sourceDir}/cmake/toolchain-windows-mingw-qt.cmake",

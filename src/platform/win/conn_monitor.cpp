@@ -5,11 +5,11 @@
 //   TCP：GetExtendedTcpTable(TCP_TABLE_OWNER_PID_ALL)，v4 与 v6 各一次 —— 四元组 + 状态 + 进程。
 //   UDP：GetExtendedUdpTable(UDP_TABLE_OWNER_PID)，v4 与 v6 各一次 —— **只有本地地址/端口 + 进程**。
 //
-// ⚠️「UDP 有没有对端」这件事是**实测**过的，不是照文档推的（tmp/probe-conn-enum.cpp）：
+// ⚠️「UDP 有没有对端」这件事是**实测**过的，不是照文档推的（一次性探针）：
 //    只 bind 的套接字与已 connect 的套接字在表里完全同形，`MIB_UDPROW_OWNER_PID` 里
 //    根本没有对端字段。`netstat` 能打出已 connect 的对端，靠的是**未公开导出**
 //    （`objdump -p netstat.exe`：IPHLPAPI!InternalGetUdpTable2 与 NSI!NsiAllocateAndGetTable）。
-//    那条路也试过（tmp/probe-udp-shapes.cpp、tmp/probe-udp-shape-d.cpp）：
+//    那条路也试过（一次性探针，五种调用形状各放一个进程）：
 //    五种调用形状里四种直接访问违例，唯一不崩的那一种给出的表**结构无法证实**
 //    （`HeapSize` 18156 字节与行数 96 除不尽，也看不到对端），
 //    于是按「宁可标未知，不猜」回退 —— 真实对端等 S3.4 的事件源。
@@ -322,7 +322,7 @@ Result<QList<ConnectionSnapshot>> WinConnMonitor::snapshot() const {
   // 为什么成立：`accept()` 出来的套接字，本地端口就是监听端口；而本机主动发起的连接
   // 拿的是临时端口，且**不可能**撞上某个正在监听（或已绑定）的端口 ——
   // 绑同一个端口会被系统拒掉。所以这个判据在「端口共享」以外的场景下是可靠的。
-  // 实测（tmp/probe-conn-enum.cpp）：本地 5502 是监听口的那条判为入站、
+  // 实测：本地 5502 是监听口的那条判为入站、
   // 本地 5503 是临时口的那条判为出站，与构造时一致。
   //
   // ⚠️ 刻意**只按端口比、不按地址比**：监听套接字常绑在 `0.0.0.0`，

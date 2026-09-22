@@ -150,7 +150,7 @@ flowchart LR
 3. 若引入新的不确定点，已在文档中记录，而不是留在代码注释里
 4. 没有残留的临时调试代码或临时文件散落在 `docs/` 与源码目录
 
-工作约定见 [architecture.md](architecture.md) 第 0 节：临时文件统一放 `tmp/`。
+工作约定见 [architecture.md](architecture.md) 第 0 节：临时文件一律不入库。
 
 ## 6 变更控制
 

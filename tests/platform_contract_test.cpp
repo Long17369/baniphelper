@@ -164,7 +164,7 @@ void PlatformContractTest::capabilityDeclarationMatchesImplementation() {
     // 所以这里给的是各自的期望值，不是一句对所有后端都成立的话 ——
     // 后者在能力落地时只能删掉重写，删掉之后就没人守着这件事了。
     //
-    // - 真实后端：S2.4 起能下发与撤销规则（tmp/drill-s2.4.cpp 实测）；
+    // - 真实后端：S2.4 起能下发与撤销规则（一次性端到端演练实测）；
     //   残留清理 S1.7 起就有，只是一直漏在声明之外，那同样是不一致。
     // - 内存后端：不追求完整的对照物，只保证界面能在没有管理员权限时跑起来。
     const bool real = backends.label == QStringLiteral("real");
@@ -763,8 +763,8 @@ void PlatformContractTest::connMonitorSnapshotIsWellFormed() {
 
 /// 会枚举连接的后端，必须能找到**刚刚亲手建立的**那几条连接。
 ///
-/// 这是 S3.1 唯一真正的行为断言：整机条数与系统工具对照属于演练
-/// （`tmp/verify-s3.1.ps1`），而「我造的这条在不在、方向对不对」必须在单元测试里就成立。
+/// 这是 S3.1 唯一真正的行为断言：整机条数与系统工具对照属于一次性演练（未入库），
+/// 而「我造的这条在不在、方向对不对」必须在单元测试里就成立。
 void PlatformContractTest::connMonitorFindsOwnSocketsWhenItCanEnumerate() {
   forEachBackend([](const Backends& backends) {
     if (!backends.first.capabilities->isSupported(Capability::ProcessEnumeration)) {

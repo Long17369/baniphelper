@@ -236,7 +236,7 @@ QString stageTitle(FilterStage stage) {
 /// 条件字段 → WFP 条件 GUID。
 ///
 /// ⚠️ **地址用不带版本后缀的 `IP_REMOTE_ADDRESS`**，不是 `_V4` / `_V6` 那一对。
-/// 这一点是实测出来的（`tmp/probe_wfp_apply.cpp` 与 `tmp/probe_wfp_fields.cpp`，
+/// 这一点是实测出来的（两个一次性探针，未入库，
 /// 结论见 docs/phases/02-filtering.md 第 3.4 节）：在 ALE 三层的字段清单里
 /// **只有** `IP_REMOTE_ADDRESS`，带后缀的那两个根本不存在，用了会得到
 /// `FWP_E_CONDITION_NOT_FOUND`（`0x80320002`）而整条过滤器加不进去。
@@ -360,7 +360,7 @@ struct FilterDraft {
 /// 文档同时写明 `FWP_BYTE_BLOB_TYPE`（装着字符串时）与 `FWP_UNICODE_STRING_TYPE`
 /// 支持这个匹配方式 —— 而应用标识正是一个装着字符串的 byte blob。
 ///
-/// 本机实测（`tmp/inv-appid-match.txt`）：装着 `\connector.exe`（带结尾 NUL）的这条
+/// 本机实测：装着 `\connector.exe`（带结尾 NUL）的这条
 /// 过滤器能拦住任意目录下的同名程序，去掉结尾 NUL 就一条都拦不住。
 ///
 /// 数值为什么写在这里：MinGW 的 `fwptypes.h` 里 `FWP_MATCH_TYPE` 到
@@ -465,7 +465,7 @@ FWP_BYTE_BLOB* storeBlob(FilterDraft& draft, const QByteArray& bytes) {
 /// 后果很不对等：我们只要把字面量也小写化，用户写 `*\Chrome.exe` 还是
 /// `*\chrome.exe` 都能命中；反过来（不小写化）则**一条都命中不了，而过滤器照样
 /// 加得进去、不报任何错** —— 正是本项目最怕的「看着生效、实际留缝」。
-/// 两个方向都实测过，见 `tmp/inv-appid-match.txt`。
+/// 两个方向都实测过。
 ///
 /// 用 `LCMapStringEx` + 不变区域，而不是自己转 ASCII：路径里可能有非 ASCII 字符。
 Result<QByteArray> lowercasedUtf16(const QString& text, bool withNul) {
@@ -499,8 +499,8 @@ Result<QByteArray> lowercasedUtf16(const QString& text, bool withNul) {
 ///
 /// 那个 API **不接受目录路径**（实测：带尾分隔符给 `ERROR_PATH_NOT_FOUND`、
 /// 不带给 `ERROR_ACCESS_DENIED`）。另一种可行的取法是「在目录里建一个临时空文件、
-/// 拿它的应用标识截到目录」—— 实测两种取法给出的字节**完全一致**
-/// （`tmp/inv-appid-dir.txt`）。这里用句柄：不往用户的目录里写东西。
+/// 拿它的应用标识截到目录」—— 实测两种取法给出的字节**完全一致**。
+/// 这里用句柄：不往用户的目录里写东西。
 /// 代价是拿到的是卷上记录的大小写，需要自己小写化（与 `lowercasedUtf16` 同一个理由），
 /// 而且解析的是连接点 / 符号链接**之后**的形态。网络路径（UNC）上的行为尚未实测。
 ///
@@ -509,8 +509,7 @@ Result<QByteArray> lowercasedUtf16(const QString& text, bool withNul) {
 /// 区间是 `[下界, 上界)`，上界取下界末位加一。若下界是 `...\games\A`（没有尾分隔符），
 /// 上界就成了 `...\games\A` 末位加一，区间会把**名字更长**的邻居
 /// `...\games\AB\...` 一起圈进来 —— 误伤。实测的对照组正是这个：
-/// 上界写成「目录名末位加一」时 `ab` 被误伤，写成「分隔符加一」时不会
-/// （`tmp/inv-appid-retest.txt`）。
+/// 上界写成「目录名末位加一」时 `ab` 被误伤，写成「分隔符加一」时不会。
 Result<QByteArray> directoryFloor(const QString& directory) {
   if (directory.isEmpty()) {
     return Result<QByteArray>::fail(
@@ -638,8 +637,7 @@ Result<void> appendWfpCondition(FilterDraft& draft,
   switch (condition.field) {
     case FilterField::AppPath: {
       if (entry.stage == FilterStage::InboundDatagram) {
-        // 数据报层的字段清单里**没有** ALE_APP_ID（实测，见
-        // tmp/probe_wfp_fields.cpp）。拿不到程序标识，这一条就表达不出来。
+        // 数据报层的字段清单里**没有** ALE_APP_ID（实测）。拿不到程序标识，这一条就表达不出来。
         //
         // 到这里就整体报错，不「下发一半」：悄悄丢掉程序条件的后果是这条规则
         // 对**所有**程序的入站 UDP 都生效，比用户要的宽得多，而且下发是成功的。

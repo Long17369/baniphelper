@@ -32,7 +32,7 @@ option(BANIPHELPER_DEPLOY_QT_TO_BUILD_TREE
 if(MSVC)
   message(FATAL_ERROR
     "本项目不使用 MSVC。请改用 Qt 套件自带的 MinGW 工具链：\n"
-    "  命令行构建：设置环境变量后用 CMakePresets.json 的预设，见 tmp/env-local.md\n"
+    "  命令行构建：设置环境变量后用 CMakePresets.json 的预设\n"
     "  Qt Creator：选择 mingw_64 套件")
 endif()
 
