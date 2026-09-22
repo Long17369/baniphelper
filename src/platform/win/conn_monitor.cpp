@@ -26,13 +26,16 @@
 
 #include <QFileInfo>
 #include <QHash>
+#include <QMutexLocker>
 #include <QSet>
 #include <QString>
 
 #include <functional>
+#include <memory>
 #include <vector>
 
 #include "core/error.h"
+#include "core/log.h"
 
 namespace baniphelper::core {
 namespace {
@@ -197,15 +200,40 @@ Result<void> readUdpTable(AddressFamily family, QList<RawRow>& out) {
   return Result<void>::ok();
 }
 
-/// PID → 进程身份，带缓存。
-///
-/// 缓存不是优化而是**必需**：一台机器上几十条连接常常只属于几个进程，
-/// 而 `OpenProcess` + `QueryFullProcessImageNameW` 是这里的绝大部分开销。
+/// PID → 进程身份。
 ///
 /// ⚠️ 解不出来时**不留空壳、也不编名字**：`imagePath` 与 `displayName` 都留空，
 /// 界面据此显示「PID n（读不到程序信息）」。实测未提权时本机 52 个 PID 里只有 20 个能解出
 /// （其余是别的会话或受保护进程的 `OpenProcess` 拒绝访问），
 /// 所以这条分支一定会被走到，不能当成异常。
+[[nodiscard]] ProcessRef resolveProcessNow(DWORD pid) {
+  ProcessRef ref;
+  ref.pid = pid;
+
+  // PID 0 不是一个进程（系统已不归属），不必白问一次。
+  // 调用方本来就过滤掉这类行，这里再挡一次是防止将来别的地方直接调进来。
+  if (pid == 0) {
+    return ref;
+  }
+
+  const HANDLE handle = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (handle != nullptr) {
+    wchar_t path[1024] = {};
+    DWORD length = 1024;
+    if (::QueryFullProcessImageNameW(handle, 0, path, &length) != FALSE) {
+      ref.identity.imagePath = QString::fromWCharArray(path, static_cast<int>(length));
+      ref.identity.displayName = QFileInfo(ref.identity.imagePath).fileName();
+    }
+    ::CloseHandle(handle);
+  }
+  return ref;
+}
+
+/// 带缓存的进程解析，供**单次快照**内部使用。
+///
+/// 缓存不是优化而是**必需**：一台机器上几十条连接常常只属于几个进程，
+/// 而 `OpenProcess` + `QueryFullProcessImageNameW` 是这里的绝大部分开销。
+/// 缓存的生命周期就是这一次快照，所以不会碰上「PID 被复用」的问题。
 class ProcessResolver {
  public:
   [[nodiscard]] ProcessRef resolve(DWORD pid) {
@@ -214,24 +242,7 @@ class ProcessResolver {
       return cached.value();
     }
 
-    ProcessRef ref;
-    ref.pid = pid;
-
-    // PID 0 不是一个进程（系统已不归属），不必白问一次。
-    // 调用方本来就过滤掉这类行，这里再挡一次是防止将来别的地方直接调进来。
-    if (pid != 0) {
-      const HANDLE handle = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-      if (handle != nullptr) {
-        wchar_t path[1024] = {};
-        DWORD length = 1024;
-        if (::QueryFullProcessImageNameW(handle, 0, path, &length) != FALSE) {
-          ref.identity.imagePath = QString::fromWCharArray(path, static_cast<int>(length));
-          ref.identity.displayName = QFileInfo(ref.identity.imagePath).fileName();
-        }
-        ::CloseHandle(handle);
-      }
-    }
-
+    const ProcessRef ref = resolveProcessNow(pid);
     cache_.insert(pid, ref);
     return ref;
   }
@@ -240,9 +251,58 @@ class ProcessResolver {
   QHash<DWORD, ProcessRef> cache_;
 };
 
+/// 一条事件要不要变成连接事件，以及变成哪一种。
+///
+/// 判据（都建立在 `observedConnection` 的实测约定之上）：
+///
+/// | 事件 | 结果 |
+/// | --- | --- |
+/// | 连接尝试 / 重连尝试（12/16，28/32） | `Appeared`，方向 Out |
+/// | 接受连接（15/31） | `Appeared`，方向 In |
+/// | 连接关闭（13/29）、尝试失败（17） | `Disappeared` |
+/// | 数据类事件（10/11/14/18/42/43/49/58/59） | **不产生连接事件**，返回 false |
+///
+/// ⚠️ 把「尝试」当成出现，是有意的：对封禁工具来说「某个程序正在往外连」本身就是
+/// 要展示的信息，而**出站方向的连接只有这一个事件**（实测：本机主动连出去时
+/// 只有 12 与 13，「接受」事件只在被动一侧产生）。
+/// 代价是一次失败的尝试会先出现再消失 —— 如实发生，不掩盖。
+[[nodiscard]] bool connectionEventFrom(const NetworkEventRecord& record,
+                                       const ProcessRef& process,
+                                       ConnectionEvent* out) {
+  switch (record.kind) {
+    case NetworkEventKind::TcpConnectAttempt:
+    case NetworkEventKind::TcpReconnectAttempt:
+    case NetworkEventKind::TcpAccepted:
+      out->kind = ConnectionEventKind::Appeared;
+      break;
+    case NetworkEventKind::TcpClosed:
+    case NetworkEventKind::TcpConnectFailed:
+      out->kind = ConnectionEventKind::Disappeared;
+      break;
+    default:
+      return false;
+  }
+
+  const ObservedConnection observed = observedConnection(record);
+  out->snapshot.key = observed.key;
+  out->snapshot.direction = observed.direction;
+  out->snapshot.process = process;
+  out->snapshot.observedAt = QDateTime::currentDateTime();
+  return true;
+}
+
 }  // namespace
 
-WinConnMonitor::~WinConnMonitor() = default;
+WinConnMonitor::WinConnMonitor() = default;
+
+WinConnMonitor::~WinConnMonitor() {
+  // 退出路径必须退订：平台侧的 ETW 会话是**进程外**的资源，不收会留在系统里。
+  // 析构里没有报错渠道，因此只能尽力而为；装配点会在退出时显式调 unsubscribe。
+  if (session_) {
+    const Result<void> stopped = session_->stop();
+    Q_UNUSED(stopped);
+  }
+}
 
 Result<QList<ConnectionSnapshot>> WinConnMonitor::snapshot() const {
   QList<RawRow> tcpRows;
@@ -352,20 +412,119 @@ Result<QList<ConnectionSnapshot>> WinConnMonitor::snapshot() const {
   return Result<QList<ConnectionSnapshot>>::ok(std::move(snapshots));
 }
 
+ProcessRef WinConnMonitor::resolveProcessForEvent(std::uint32_t pid) {
+  return resolveProcessNow(pid);
+}
+
+void WinConnMonitor::dispatchEvent(const ConnectionEvent& event) {
+  // 先把订阅者拷出来，**在锁外**回调：契约明说回调在平台层自己的线程上同步调用，
+  // 持锁调用会给界面留一个「回调里再调回来就自锁」的坑。
+  QList<SinkEntry> sinks;
+  {
+    QMutexLocker locker(&mutex_);
+    sinks = sinks_;
+  }
+  for (const SinkEntry& entry : sinks) {
+    if (entry.sink) {
+      entry.sink(event);
+    }
+  }
+}
+
 Result<SubscriptionId> WinConnMonitor::subscribe(ConnectionEventSink sink) {
-  Q_UNUSED(sink);
-  return Result<SubscriptionId>::fail(unsupportedError(
-      QStringLiteral("按事件订阅连接变化"),
-      QStringLiteral("事件源（ETW 的 Microsoft-Windows-Kernel-Network 提供程序）属于阶段三 S3.3，"
-                     "尚未落地，因此本后端**不声明** EventDrivenConnections 能力。"
-                     "在此之前上层只能轮询 snapshot()，而且必须如实标注精度差异 ——"
-                     "两次轮询之间的短连接会整条漏掉，这一点要显示给用户，不能悄悄降级")));
+  if (!sink) {
+    return Result<SubscriptionId>::fail(
+        makeError(ErrorCode::InvalidArgument, QStringLiteral("订阅回调为空，事件无处可去")));
+  }
+
+  // ⚠️ 这里持锁调 `start` 是安全的：`start` **不 join 消费者线程**，
+  // 那条线程顶多在分发的路上等一下这把锁。
+  // 反面例子是 `unsubscribe` 里的 `stop`（它要 join），所以那一边必须先放锁再停 ——
+  // 否则「持锁 join 一条正等锁的线程」就是死锁。
+  QMutexLocker locker(&mutex_);
+
+  if (sinks_.isEmpty()) {
+    // 第一次订阅才开会话：没有订阅者时不该占着内核侧的采集资源
+    // （退到空订阅时会停会话，见 unsubscribe）。
+    session_ = std::make_unique<KernelNetworkSession>();
+    gate_.clear();
+
+    const Result<void> started = session_->start(
+        connectionLifecycleEventIds(), [this](const NetworkEventRecord& record) {
+          ConnectionEvent event;
+          if (!connectionEventFrom(record, resolveProcessForEvent(record.pid), &event)) {
+            return;
+          }
+          if (event.kind == ConnectionEventKind::Appeared) {
+            // 「同一个连接在同一个状态上只上报一次」：重复的尝试与重连一律压掉。
+            //
+            // ⚠️ 闸门的状态与 `sinks_` 共用同一把锁：闸门会在退订时被清空，
+            // 而那一刻消费者线程可能正在投递事件。虽然正常路径上「停会话 → 清闸门」
+            // 已经把两者错开，但这里仍然加锁 —— 这把锁的代价是每条生命周期事件一次，
+            // 换来的是「不必依赖调用顺序也正确」。
+            bool report = false;
+            {
+              QMutexLocker gateLocker(&mutex_);
+              report = gate_.acceptAppeared(event.snapshot.key);
+            }
+            if (!report) {
+              return;
+            }
+          } else {
+            // 关闭事件不做门口：漏掉一条关闭会在记录里留下一条永远不消失的连接，
+            // 而重复的关闭对一个已经消失的键本来就是无操作。
+            QMutexLocker gateLocker(&mutex_);
+            gate_.noteDisappeared(event.snapshot.key);
+          }
+          dispatchEvent(event);
+        });
+    if (!started) {
+      session_.reset();
+      return Result<SubscriptionId>::fail(started.error());
+    }
+    logWrite(LogLevel::Info,
+             QStringLiteral("已订阅连接事件：ETW Microsoft-Windows-Kernel-Network，"
+                            "按事件号过滤后订了 %1 个生命周期事件")
+                 .arg(connectionLifecycleEventIds().size()));
+  }
+
+  SinkEntry entry;
+  entry.id = nextId_++;
+  entry.sink = std::move(sink);
+  sinks_.append(entry);
+  return Result<SubscriptionId>::ok(entry.id);
 }
 
 Result<void> WinConnMonitor::unsubscribe(SubscriptionId id) {
-  Q_UNUSED(id);
-  // 契约要求：对未知句柄退订返回成功。这里本来就没有可退的东西，但**不能报错** ——
-  // 退出路径会把「退订」当成收尾动作无条件调一次，报错只会制造假警报。
+  bool shouldStopSession = false;
+  {
+    QMutexLocker locker(&mutex_);
+
+    // 契约要求：对未知句柄退订返回成功。退出路径会把「退订」当成收尾动作无条件调一次，
+    // 报错只会制造假警报。
+    for (int i = 0; i < sinks_.size(); ++i) {
+      if (sinks_.at(i).id != id) {
+        continue;
+      }
+      sinks_.removeAt(i);
+      break;
+    }
+    shouldStopSession = sinks_.isEmpty() && session_ != nullptr;
+  }
+
+  if (shouldStopSession) {
+    // **在锁外停**：`stop` 会 join 消费者线程，而那条线程可能正卡在 dispatchEvent 的锁上。
+    const Result<void> stopped = session_->stop();
+    if (!stopped) {
+      // 停不掉要如实报，**不能悄悄把会话留在系统里**：
+      // 那会让下一个实例撞上「同名会话已存在」。
+      return Result<void>::fail(stopped.error());
+    }
+    QMutexLocker locker(&mutex_);
+    session_.reset();
+    gate_.clear();
+    logWrite(LogLevel::Info, QStringLiteral("连接事件订阅已全部退订，ETW 会话已停止"));
+  }
   return Result<void>::ok();
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QList>
+#include <QMutex>
 
 #include "core/result.h"
 #include "platform/api/iconnmonitor.h"
@@ -17,8 +18,14 @@ namespace baniphelper::core {
 ///
 /// 与真实后端保持同一套说法（否则「先用内存后端做界面」就失去了意义）：
 ///
-/// - `subscribe` 同样返回 `NotSupported`，`EventDrivenConnections` 同样**不声明**；
+/// - `subscribe` 是**真的模拟了**的：`emitEvent` 投一条，订阅者就收到一条，
+///   因此「订上了就真收得到」这条契约能在没有 ETW、也不需要提权的条件下验到底 ——
+///   这正是它声明 `EventDrivenConnections` 的理由（与 `MemoryPrivilege` 能同时覆盖
+///   已提权与未提权两条分支是同一个道理）；
 /// - `unsubscribe` 对未知句柄同样返回成功。
+///
+/// ⚠️ 它**不做出现去重**：去重是平台实现照着接口契约做的事，而它只是个替身，
+/// 投什么就送什么。
 ///
 /// ⚠️ 它**不声明** `ProcessEnumeration`：它确实枚举不了系统里的进程，
 /// 而能力位的语义就是「真的做得到」。界面据此显示为不可用是对的 ——
@@ -44,8 +51,19 @@ class MemoryConnMonitor final : public IConnMonitor {
   /// 清空预置内容。
   void clear();
 
+  /// 向全部订阅者投一条事件。没有订阅者时什么都不发生。
+  void emitEvent(const ConnectionEvent& event);
+
  private:
+  struct SinkEntry {
+    SubscriptionId id = kInvalidSubscription;
+    ConnectionEventSink sink;
+  };
+
+  mutable QMutex mutex_;
   QList<ConnectionSnapshot> rows_;
+  QList<SinkEntry> sinks_;
+  SubscriptionId nextId_ = 1;
 };
 
 }  // namespace baniphelper::core

@@ -85,3 +85,10 @@ target_link_libraries(baniphelper_platform_contract_test PRIVATE
   # 核心层的 Qt6::Network 是 PRIVATE 的，include 目录不会传过来，所以这里显式链一次。
   Qt6::Network
 )
+
+# ETW 事件的解码约定（S3.3）。与 filter_plan 同理：判据与平台的事件号贴紧，
+# 因此实现留在 platform/win/ 下，测试要链真实后端才拿得到它。
+baniphelper_add_test(etw_network baniphelper_etw_network_test
+  etw_network_test.cpp
+)
+target_link_libraries(baniphelper_etw_network_test PRIVATE BanIPHelper::Backend)

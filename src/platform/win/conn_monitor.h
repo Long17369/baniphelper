@@ -1,7 +1,16 @@
 #pragma once
 
+#include <QHash>
+#include <QList>
+#include <QMutex>
+
+#include <cstdint>
+#include <memory>
+
 #include "core/result.h"
+#include "core/types.h"
 #include "platform/api/iconnmonitor.h"
+#include "platform/win/etw_network.h"
 
 namespace baniphelper::core {
 
@@ -30,12 +39,22 @@ namespace baniphelper::core {
 /// 本地端口落在「本机处于 LISTEN 的端口集合」里就判为入站，否则判为出站。
 /// 实现注释里给出了这个判据为什么成立、以及在什么场景下会判错。
 ///
-/// ⚠️ `subscribe` **不实现**：事件源是阶段三 S3.3 的事（ETW 的
-/// `Microsoft-Windows-Kernel-Network`），能力位 `EventDrivenConnections`
-/// 因此不声明，本方法如实返回 `NotSupported` 并说明上层该退化成什么。
+/// `subscribe` **已实现**（阶段三 S3.3）：订的是
+/// `Microsoft-Windows-Kernel-Network` 的 **TCP 生命周期事件**，能力位
+/// `EventDrivenConnections` 因此被声明。三件必须知道的事：
+///
+/// 1. **UDP 的数据报事件不进这条通道**。它们是**逐报文**的（一次 DNS 风暴就是一次事件风暴），
+///    而接口契约要求「同一个连接在同一个状态上只上报一次」；把它们当 `Appeared` 上报会把
+///    记录表打爆。UDP 行仍然只从 `snapshot()` 来，逐包数据留给 S3.4 的统计用途；
+/// 2. **起 ETW 会话要提权**。权限不足时 `subscribe` 返回 `ErrorCode::NotPermitted`
+///    并说明怎么办 —— 不返回「成功但永远收不到事件」；
+/// 3. **`TcpConnectFailed`（仅 IPv4 有这个事件）当作 `Disappeared`**，
+///    所以一次失败的连接尝试会先 `Appeared` 再 `Disappeared`。IPv6 没有失败事件，
+///    那一边失败尝试留下的一条记录只能等后续的关闭事件或保留期清理 ——
+///    这一点如实记在阶段文档里，不靠猜。
 class WinConnMonitor final : public IConnMonitor {
  public:
-  WinConnMonitor() = default;
+  WinConnMonitor();
   ~WinConnMonitor() override;
 
   WinConnMonitor(const WinConnMonitor&) = delete;
@@ -44,6 +63,26 @@ class WinConnMonitor final : public IConnMonitor {
   [[nodiscard]] Result<QList<ConnectionSnapshot>> snapshot() const override;
   [[nodiscard]] Result<SubscriptionId> subscribe(ConnectionEventSink sink) override;
   [[nodiscard]] Result<void> unsubscribe(SubscriptionId id) override;
+
+ private:
+  /// 一个订阅者。
+  struct SinkEntry {
+    SubscriptionId id = kInvalidSubscription;
+    ConnectionEventSink sink;
+  };
+
+  /// 取进程标识。**刻意不缓存**：连接生命周期事件是低频的，而按 PID 长期缓存
+  /// 会把「PID 被系统复用」变成「A 的程序名挂到 B 的连接上」—— 正是本项目最怕的错法。
+  [[nodiscard]] static ProcessRef resolveProcessForEvent(std::uint32_t pid);
+
+  /// 把事件分发给全部订阅者。回调在事件线程上同步执行，因此**不许持锁调用**。
+  void dispatchEvent(const ConnectionEvent& event);
+
+  mutable QMutex mutex_;
+  QList<SinkEntry> sinks_;
+  SubscriptionId nextId_ = 1;
+  std::unique_ptr<KernelNetworkSession> session_;
+  AppearanceGate gate_;
 };
 
 }  // namespace baniphelper::core

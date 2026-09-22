@@ -19,8 +19,11 @@ PlatformBackend makeMemoryBackend(const QString& singleInstanceName) {
   // 内存后端只声明它真的模拟了的能力，不做「看起来什么都行」的假声明。
   // `KillTcpV4` 在这里是**真的模拟了**：`MemoryKiller` 会记账并给出与真实后端
   // 同一套「能不能断」的答案（UDP 不行、IPv6 不行），所以如实声明。
+  // `EventDrivenConnections` 同理：`MemoryConnMonitor` 真的把投进去的事件送到订阅者手上，
+  // 因此「订上了就真收得到」这条契约能在不需要 ETW、也不需要提权的条件下被验到底。
   CapabilitySet declared;
   declared.add(Capability::KillTcpV4);
+  declared.add(Capability::EventDrivenConnections);
   declared.add(Capability::Elevation);
   declared.add(Capability::SingleInstance);
 

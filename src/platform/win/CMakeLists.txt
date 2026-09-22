@@ -12,6 +12,7 @@
 add_library(baniphelper_backend_impl STATIC
   backend.cpp
   conn_monitor.cpp
+  etw_network.cpp
   filter_engine.cpp
   filter_plan.cpp
   killer.cpp
@@ -29,7 +30,10 @@ target_link_libraries(baniphelper_backend_impl PUBLIC
 # fwpuclnt：WFP 用户态 API（FwpmEngineOpen0 等）。
 # ole32：CoCreateGuid，给每条下发的过滤器取一个唯一标识。
 # iphlpapi：SetTcpEntry，断连靠它删掉传输控制块。
-# ws2_32：InetPtonW，把规则里的地址文本转成网络字节序的 in_addr。
-target_link_libraries(baniphelper_backend_impl PRIVATE shell32 fwpuclnt ole32 iphlpapi ws2_32)
+# ws2_32：InetPtonW，把规则里的地址文本转成网络字节序的 in_addr；
+#         InetNtopW，把事件里的地址字节转成文本。
+# advapi32：ETW 的 StartTraceW / EnableTraceEx2 / ControlTraceW / OpenTraceW。
+# tdh：TdhGetProperty，按字段名从事件里取值。
+target_link_libraries(baniphelper_backend_impl PRIVATE shell32 fwpuclnt ole32 iphlpapi ws2_32 advapi32 tdh)
 
 baniphelper_enable_warnings(baniphelper_backend_impl)

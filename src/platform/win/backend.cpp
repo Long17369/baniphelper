@@ -36,13 +36,19 @@ Result<PlatformBackend> createPlatformBackend(const QString& singleInstanceName)
   // 但能力位的语义是「这个平台提供这项能力」而不是「每一行都解得出来」：
   // 解不出的行会如实留空，界面显示「读不到程序信息」，不冒名字。
   //
-  // `EventDrivenConnections` **不声明**（S3.3 才做）。
+  // `EventDrivenConnections` 在 S3.3 落地：订 `Microsoft-Windows-Kernel-Network` 的
+  // TCP 生命周期事件（按事件号在内核侧过滤），不再轮询。
+  // ⚠️ 订的是 **TCP** 生命周期；UDP 的数据报事件是逐报文的，不进这条通道
+  // （会把记录表打爆），UDP 行仍然只从 snapshot() 来 —— 见 WinConnMonitor 的类注释。
+  // 起会话需要提权，权限不足时 subscribe 报 NotPermitted 并说明怎么办，
+  // 不假装成功。
   CapabilitySet declared;
   declared.add(Capability::FilterIPv4);
   declared.add(Capability::FilterIPv6);
   declared.add(Capability::KillTcpV4);
   declared.add(Capability::OrphanCleanup);
   declared.add(Capability::ProcessEnumeration);
+  declared.add(Capability::EventDrivenConnections);
   declared.add(Capability::Elevation);
   declared.add(Capability::SingleInstance);
 

@@ -126,7 +126,8 @@ class PlatformContractTest : public QObject {
   void killerWillNotSilentlySucceed();
   void connMonitorSnapshotIsWellFormed();
   void connMonitorFindsOwnSocketsWhenItCanEnumerate();
-  void connMonitorRefusesEventsWhenNotDeclared();
+  void connMonitorEventsMatchDeclaredCapabilities();
+  void connMonitorDeliversEmittedEvents();
 };
 
 void PlatformContractTest::backendIsComplete() {
@@ -173,11 +174,14 @@ void PlatformContractTest::capabilityDeclarationMatchesImplementation() {
     // docs/phases/03-observation.md 第 3.1 节），内存后端只能回放预置内容、枚举不了系统进程。
     QVERIFY2(backend.capabilities->isSupported(Capability::ProcessEnumeration) == real,
              qPrintable(backends.label + " 后端的 ProcessEnumeration 声明与实现进度不一致"));
-    // 事件驱动要等 S3.3 的 ETW，两个后端现在都不许声明 ——
-    // 声明了却订不上，界面就会去等一个永远不会来的事件。
-    QVERIFY2(
-        !backend.capabilities->isSupported(Capability::EventDrivenConnections),
-        qPrintable(backends.label + " 后端声明了 EventDrivenConnections，但事件源（S3.3）还没做"));
+    // 事件驱动：S3.3 落地后**两个后端都声明**，但理由不同 ——
+    // 真实后端订的是 ETW 的 TCP 生命周期事件，内存后端是真的把投进去的事件送到订阅者手上。
+    // 两个都声明，是因为「订上了就真收得到」这条契约在两边都成立；
+    // 真实后端未提权时订不上，那属于权限不足（`NotPermitted`），
+    // 由 connMonitorEventsMatchDeclaredCapabilities 单独守。
+    QVERIFY2(backend.capabilities->isSupported(Capability::EventDrivenConnections),
+             qPrintable(backends.label + " 后端实现了事件订阅却没声明 EventDrivenConnections，"
+                                         "界面上会把它显示成「只能轮询」"));
   });
 }
 
@@ -846,35 +850,106 @@ void PlatformContractTest::connMonitorFindsOwnSocketsWhenItCanEnumerate() {
 ///
 /// 这条守的是「静默降级」：返回一个永远不触发的事件句柄，界面会安安静静地
 /// 等一个不会来的事件，而「已退化成轮询」以及它带来的「短连接会漏」就不会被标注出来。
-void PlatformContractTest::connMonitorRefusesEventsWhenNotDeclared() {
+///
+/// 真实后端声明了这个能力，而它的数据源（ETW 实时会话）**需要提权**，
+/// 所以未提权时唯一允许的失败是 `NotPermitted` 加非空说明；
+/// 「声明了却报 NotSupported」属于自相矛盾，必须失败。
+void PlatformContractTest::connMonitorEventsMatchDeclaredCapabilities() {
   forEachBackend([](const Backends& backends) {
     const bool declared =
         backends.first.capabilities->isSupported(Capability::EventDrivenConnections);
+    const Result<bool> elevatedResult = backends.first.privilege->isElevated();
+    QVERIFY2(elevatedResult.hasValue(),
+             qPrintable(QStringLiteral("%1 后端答不出自己是不是提权，订阅契约就无从判断")
+                            .arg(backends.label)));
+    const bool elevated = elevatedResult.value();
+
     const Result<SubscriptionId> subscription =
         backends.first.connMonitor->subscribe([](const ConnectionEvent&) {});
 
-    if (declared) {
-      QVERIFY2(subscription.hasValue(),
-               qPrintable(QStringLiteral("%1 后端声明了事件驱动却订不上：%2")
-                              .arg(backends.label,
-                                   subscription.errorOrNull() ? subscription.error().message
-                                                              : QString())));
-      QVERIFY(subscription.value() != kInvalidSubscription);
-      QVERIFY(backends.first.connMonitor->unsubscribe(subscription.value()).hasValue());
-    } else {
+    if (!declared) {
       QVERIFY2(
           !subscription.hasValue(),
           qPrintable(backends.label + " 后端没声明 EventDrivenConnections，subscribe 却成功了 —— "
                                       "上层会去等一个永远不会来的事件"));
-      QVERIFY(subscription.error().code == ErrorCode::NotSupported);
+      QCOMPARE(subscription.error().code, ErrorCode::NotSupported);
       QVERIFY2(!subscription.error().message.trimmed().isEmpty(),
                "报不支持时必须给出非空说明，否则界面上只剩一个没有任何解释的灰按钮");
+    } else if (subscription.hasValue()) {
+      QVERIFY2(subscription.value() != kInvalidSubscription,
+               qPrintable(QStringLiteral("%1 后端发了一个无效的订阅句柄（0）")
+                              .arg(backends.label)));
+      QVERIFY2(backends.first.connMonitor->unsubscribe(subscription.value()).hasValue(),
+               "声明了事件驱动却退不掉，平台侧订阅会泄漏");
+    } else {
+      QVERIFY2(!elevated,
+               qPrintable(QStringLiteral("%1 后端在已提权状态下仍然订不上连接事件：%2")
+                              .arg(backends.label, subscription.error().message)));
+      // ⚠️ 未提权时这条会失败，而失败信息里必须带上原生码：ETW 的失败原因
+      // （权限不足 / 会话名冲突 / 提供程序订不上）给的都是不同的 Win32 码，
+      // 只报「不是 NotPermitted」等于没说。
+      QVERIFY2(subscription.error().code == ErrorCode::NotPermitted,
+               qPrintable(QStringLiteral("%1 后端未提权却报的不是「权限不足」：%2（原生码 %3）")
+                              .arg(backends.label, subscription.error().message)
+                              .arg(subscription.error().nativeCode)));
+      QVERIFY2(!subscription.error().message.trimmed().isEmpty(),
+               "报权限不足时必须说清怎么办（需要管理员还是需要哪个组）");
     }
 
     // 退订必须幂等且对未知句柄成功：退出路径会无条件调一次收尾。
     QVERIFY(backends.first.connMonitor->unsubscribe(kInvalidSubscription).hasValue());
     QVERIFY(backends.first.connMonitor->unsubscribe(0x5EED1234).hasValue());
   });
+}
+
+/// 「订上了就真收得到」：用内存后端验到底。
+///
+/// 真实后端的事件来自 ETW，既要提权又依赖机器上真有流量，做不成无条件可重复的断言；
+/// 而这条契约本身（订了就能收到、退订就不再收到）必须由**受控输入**来验。
+/// 真实后端的行为证据在阶段三的演练里（真建一条连接看有没有事件）。
+void PlatformContractTest::connMonitorDeliversEmittedEvents() {
+  MemoryConnMonitor monitor;
+  QList<ConnectionEvent> first;
+  QList<ConnectionEvent> second;
+
+  const Result<SubscriptionId> firstId =
+      monitor.subscribe([&first](const ConnectionEvent& event) { first.append(event); });
+  QVERIFY2(firstId.hasValue(), qPrintable(firstId.errorOrNull() ? firstId.error().message
+                                                               : QString()));
+  const Result<SubscriptionId> secondId =
+      monitor.subscribe([&second](const ConnectionEvent& event) { second.append(event); });
+  QVERIFY2(secondId.hasValue(), "同一个监视器要能同时挂多个订阅者，两个 id 不能撞车");
+  QVERIFY(firstId.value() != secondId.value());
+
+  ConnectionEvent appeared;
+  appeared.kind = ConnectionEventKind::Appeared;
+  appeared.snapshot.key = makeConnectionKey(TransportProtocol::Tcp, AddressFamily::V4);
+  appeared.snapshot.direction = Direction::Out;
+  monitor.emitEvent(appeared);
+
+  QCOMPARE(first.size(), 1);
+  QCOMPARE(second.size(), 1);
+  QCOMPARE(first.first().kind, ConnectionEventKind::Appeared);
+  QVERIFY(first.first().snapshot.key == appeared.snapshot.key);
+
+  // 退订之后**不再收到**：收尾路径靠这条保证「不会往已经销毁的对象上回调」。
+  QVERIFY(monitor.unsubscribe(firstId.value()).hasValue());
+  ConnectionEvent disappeared;
+  disappeared.kind = ConnectionEventKind::Disappeared;
+  disappeared.snapshot.key = appeared.snapshot.key;
+  monitor.emitEvent(disappeared);
+  QCOMPARE(first.size(), 1);
+  QCOMPARE(second.size(), 2);
+  QCOMPARE(second.last().kind, ConnectionEventKind::Disappeared);
+
+  QVERIFY(monitor.unsubscribe(secondId.value()).hasValue());
+  monitor.emitEvent(appeared);
+  QCOMPARE(second.size(), 2);
+
+  // 空回调要当场拒掉，不能给一个「成功但永远不会有人收到」的订阅。
+  const Result<SubscriptionId> empty = monitor.subscribe(ConnectionEventSink());
+  QVERIFY2(!empty.hasValue(), "空回调的订阅被接受了：界面会以为在等事件，实际永远等不到");
+  QCOMPARE(empty.error().code, ErrorCode::InvalidArgument);
 }
 
 QTEST_GUILESS_MAIN(PlatformContractTest)
