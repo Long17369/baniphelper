@@ -99,10 +99,39 @@ QList<Migration> defaultMigrations() {
   base.statements = QStringList{
       QStringLiteral("CREATE TABLE meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)")};
 
+  // S2.9：规则表。
+  //
+  // 几个刻意的选择：
+  //
+  // - `conditions` 存成 JSON 文本而不是另开一张条件表。条件是**整体**语义
+  //   （域间交集、域内并集），拆成行之后「一条规则的条件」要靠 join 拼回来，
+  //   而条件没有独立于规则的生命周期。代价是条件本身不可用 SQL 检索，
+  //   但本程序从来不按条件查规则 —— 规则总量在个位到百位量级，读全表即可。
+  // - 时间一律存 **UTC** 的 ISO 8601（带毫秒）。`expire_at` 的比较走字符串比较，
+  //   只有格式统一、时区统一时字典序才等于时间序。
+  // - `created_at` 是**并列时的稳定依据**（同具体度则先建的优先），
+  //   所以它由存储层维护、更新时不许改写。
+  // - `enabled` 与 `expire_at` 上建索引：启动与定时巡检都要问
+  //   「启用中的、已到期的」这一小撮规则。
+  Migration rules;
+  rules.version = 2;
+  rules.description = QStringLiteral("建立 rules 表");
+  rules.statements = QStringList{
+      QStringLiteral("CREATE TABLE rules ("
+                     "id TEXT PRIMARY KEY NOT NULL, "
+                     "action INTEGER NOT NULL, "
+                     "conditions TEXT NOT NULL, "
+                     "enabled INTEGER NOT NULL, "
+                     "expire_at TEXT, "
+                     "note TEXT NOT NULL DEFAULT '', "
+                     "schema INTEGER NOT NULL, "
+                     "created_at TEXT NOT NULL, "
+                     "updated_at TEXT NOT NULL)"),
+      QStringLiteral("CREATE INDEX rules_enabled_expire ON rules (enabled, expire_at)")};
+
   // 后续迁移在这里追加，并遵守两条：版本号接着往下排；已发布的条目不修改、不重排。
-  //   S2.9 → 2：rules 表
   //   S3   → 3：connection_records 表
-  return QList<Migration>{base};
+  return QList<Migration>{base, rules};
 }
 
 struct Database::Impl {

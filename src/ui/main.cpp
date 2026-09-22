@@ -1,9 +1,11 @@
 #include <QApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QIcon>
 #include <QMessageBox>
 #include <QQmlApplicationEngine>
 #include <QString>
+#include <QTimer>
 #include <QWindow>
 
 #include <cstdlib>
@@ -13,6 +15,8 @@
 #include "core/json_config.h"
 #include "core/log.h"
 #include "core/platform_backend.h"
+#include "core/rule_runtime.h"
+#include "core/rule_store_sqlite.h"
 #include "core/version.h"
 #include "ui/app_shell.h"
 
@@ -227,11 +231,21 @@ int main(int argc, char* argv[]) {
                                 .arg(backend.value().privilege->elevationRequirementText());
   }
 
+  // 规则仓储与它的生命周期编排（S2.9）。
+  //
+  // 声明在这里是因为下面两段都要用它：一段把库里的规则装回引擎，
+  // 另一段是运行期间的过期巡检。两者都是**同一个对象**，顺序才不会分叉。
+  SqliteRuleStore ruleStore(database);
+  RuleRuntime ruleRuntime(ruleStore, *backend.value().filterEngine);
+
   // 启动清理：收掉上次运行残留的自有过滤器。
   //
   // 过滤器在进程退出后仍然活在内核里，而崩溃与强杀都不会走退出路径，
   // 因此「启动时先清一遍」是唯一能保证不残留的地方。
   // 清理按自有 provider 限定，他方过滤器在结构上就不可能被误删。
+  //
+  // ⚠️ **清理必须排在「按库重建」之前。** 反过来的话，刚下发的规则会被当成
+  // 「上次运行残留的过滤器」收掉 —— 规则永远不生效，而且清理还报成功。
   //
   // 失败只报告不阻断启动：带着残留过滤器启动的后果是旧规则仍在生效，
   // 比打不开界面轻，而且用户需要看到界面才知道发生了什么。
@@ -247,6 +261,49 @@ int main(int argc, char* argv[]) {
       qInfo().noquote()
           << QStringLiteral("已清掉 %1 条上次运行残留的过滤器").arg(cleanup.value().removedOwn);
     }
+
+    // 按库重建规则。到这一步为止引擎已经干净，所以下发上去的都是本次运行的东西。
+    //
+    // 报告的四类数字加起来就是库里的规则总数：单条失败**不阻断**其余规则生效，
+    // 但每一条都要在日志里有交代 —— 「静默地少下发一条」是这一步最严重的失败方式。
+    const Result<RestoreReport> restored = ruleRuntime.restore();
+    if (!restored) {
+      logWrite(LogLevel::Warn,
+               QStringLiteral("读取已保存的规则失败，本次启动没有规则生效：%1")
+                   .arg(restored.error().message));
+    } else {
+      logWrite(LogLevel::Info,
+               QStringLiteral("规则已恢复：生效 %1 条，已过期未下发 %2 条，已停用 %3 条")
+                   .arg(restored.value().applied)
+                   .arg(restored.value().alreadyExpired)
+                   .arg(restored.value().disabled));
+      for (const RuleProblem& problem : restored.value().failures) {
+        logWrite(LogLevel::Warn,
+                 QStringLiteral("规则「%1」未能生效：%2").arg(problem.id, problem.reason));
+      }
+    }
+
+    // 过期巡检：启动时先跑一趟（把「上次退出之后才到期」的规则收掉），之后每分钟一趟。
+    //
+    // 没有它的话，带过期时间的规则会在到期后继续生效到下次重启 ——
+    // 而「到期」正是用户用来给自己兜底的手段，失效不准时等于兜底失效。
+    auto expiring = new QTimer(&app);
+    QObject::connect(expiring, &QTimer::timeout, &app, [&ruleRuntime]() {
+      const Result<ExpireReport> expired = ruleRuntime.expireDue(QDateTime::currentDateTimeUtc());
+      if (!expired) {
+        logWrite(LogLevel::Warn,
+                 QStringLiteral("检查已到期规则失败：%1").arg(expired.error().message));
+        return;
+      }
+      for (const RuleId& id : expired.value().disabled) {
+        logWrite(LogLevel::Info, QStringLiteral("规则「%1」已到期，已撤销并停用").arg(id));
+      }
+      for (const RuleProblem& problem : expired.value().failures) {
+        logWrite(LogLevel::Warn,
+                 QStringLiteral("规则「%1」的过期处理未完成：%2").arg(problem.id, problem.reason));
+      }
+    });
+    expiring->start(60 * 1000);
   }
 
   // 托盘外壳。

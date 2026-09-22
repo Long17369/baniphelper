@@ -32,6 +32,8 @@ add_library(baniphelper_core STATIC
   main_thread_dispatch.cpp
   platform_backend.cpp
   rule_model.cpp
+  rule_runtime.cpp
+  rule_store_sqlite.cpp
   types.cpp
   version.cpp
 )

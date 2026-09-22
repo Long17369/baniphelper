@@ -30,14 +30,17 @@ QString databasePathIn(const QTemporaryDir& dir) {
 }
 
 /// 内置迁移 + 一条测试迁移，用来验证「版本更高」与「迁移中途失败」两条路径。
-QList<Migration> migrationsWithSecond() {
+///
+/// 版本号取「内置表的下一个空位」而**不写死数字**：`rules`（S2.9）落地时
+/// 这条测试就靠它从 2 自动挑到了 3，将来再加迁移也不用回来改。
+QList<Migration> migrationsWithExtraStep() {
   QList<Migration> list = defaultMigrations();
-  Migration second;
-  second.version = 2;
-  second.description = QStringLiteral("测试用：建立临时表 t");
-  second.statements =
+  Migration extra;
+  extra.version = Database::latestSchemaVersion(list) + 1;
+  extra.description = QStringLiteral("测试用：建立临时表 t");
+  extra.statements =
       QStringList{QStringLiteral("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")};
-  list.append(second);
+  list.append(extra);
   return list;
 }
 
@@ -117,7 +120,7 @@ void DatabaseTest::secondOpenDoesNotRepeatMigrations() {
 
   Database reopened;
   QVERIFY(reopened.open(path).hasValue());
-  QCOMPARE(reopened.schemaVersion().value(), 1);
+  QCOMPARE(reopened.schemaVersion().value(), Database::latestSchemaVersion(defaultMigrations()));
 
   // 「不重复建表」的判据：创建时间没被改写（改写说明又跑了一遍初始化）。
   const auto secondCreatedAt = reopened.metaValue(QString::fromLatin1(kMetaKeyCreatedAt));
@@ -317,11 +320,12 @@ void DatabaseTest::newerSchemaVersionIsRejected() {
   QVERIFY(dir.isValid());
   const QString path = databasePathIn(dir);
 
-  // 先用「两个迁移」的表建库，模拟更高版本的程序建的库。
+  // 先用「多一个迁移」的表建库，模拟更高版本的程序建的库。
   {
+    const QList<Migration> withExtra = migrationsWithExtraStep();
     Database newer;
-    QVERIFY(newer.open(path, migrationsWithSecond()).hasValue());
-    QCOMPARE(newer.schemaVersion().value(), 2);
+    QVERIFY(newer.open(path, withExtra).hasValue());
+    QCOMPARE(newer.schemaVersion().value(), Database::latestSchemaVersion(withExtra));
     newer.close();
   }
 
@@ -340,7 +344,7 @@ void DatabaseTest::failingMigrationLeavesEarlierVersionIntact() {
 
   QList<Migration> broken = defaultMigrations();
   Migration second;
-  second.version = 2;
+  second.version = Database::latestSchemaVersion(broken) + 1;
   second.description = QStringLiteral("测试用：前半句能跑、后半句是垃圾");
   second.statements = QStringList{QStringLiteral("CREATE TABLE half (id INTEGER)"),
                                   QStringLiteral("THIS IS NOT SQL")};
@@ -353,10 +357,11 @@ void DatabaseTest::failingMigrationLeavesEarlierVersionIntact() {
     QVERIFY(!opened.error().message.isEmpty());
   }
 
-  // 重新用正常的迁移表打开：版本应当停在 1，而且半成品表不该存在。
+  // 重新用正常的迁移表打开：版本应当停在「内置表的最后一个」，而且半成品表不该存在。
+  const QList<Migration> builtin = defaultMigrations();
   Database reopened;
-  QVERIFY(reopened.open(path, defaultMigrations()).hasValue());
-  QCOMPARE(reopened.schemaVersion().value(), 1);
+  QVERIFY(reopened.open(path, builtin).hasValue());
+  QCOMPARE(reopened.schemaVersion().value(), Database::latestSchemaVersion(builtin));
 
   const auto leftover =
       reopened.query(QStringLiteral("SELECT name FROM sqlite_master WHERE name = 'half'"));
@@ -372,7 +377,7 @@ void DatabaseTest::brokenMigrationTableIsRejected() {
   // 版本号跳号
   QList<Migration> gap = defaultMigrations();
   Migration third;
-  third.version = 3;
+  third.version = Database::latestSchemaVersion(gap) + 2;
   third.description = QStringLiteral("跳号了");
   third.statements = QStringList{QStringLiteral("CREATE TABLE gap (id INTEGER)")};
   gap.append(third);
@@ -385,7 +390,7 @@ void DatabaseTest::brokenMigrationTableIsRejected() {
   // 迁移没有语句
   QList<Migration> empty = defaultMigrations();
   Migration hollow;
-  hollow.version = 2;
+  hollow.version = Database::latestSchemaVersion(empty) + 1;
   hollow.description = QStringLiteral("没有语句");
   empty.append(hollow);
   Database second;

@@ -54,6 +54,16 @@ baniphelper_add_test(rule_model baniphelper_rule_model_test
   rule_model_test.cpp
 )
 
+# 规则仓储：跑在真实的 SQLite 上（QTemporaryDir 里的临时库），不碰 %APPDATA%。
+baniphelper_add_test(rule_store baniphelper_rule_store_test
+  rule_store_test.cpp
+)
+
+# 规则生命周期编排：只用假实现就能验顺序与回滚，因此只链核心层。
+baniphelper_add_test(rule_runtime baniphelper_rule_runtime_test
+  rule_runtime_test.cpp
+)
+
 # 展开器的拆法是纯逻辑（不包含任何平台专有头），但它按约定放在 platform/win/ 下
 # —— 拆法允许与平台的过滤机制贴紧。因此这个测试要链真实后端才能拿到实现。
 # 若将来出现第二个平台的拆法与 Windows 相同，把这几个文件上移到 core/ 即可。
