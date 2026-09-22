@@ -40,6 +40,24 @@ Error sqlFailure(const QString& action, const QSqlError& error) {
   return makeError(ErrorCode::Io, QStringLiteral("%1失败：%2").arg(action, detail));
 }
 
+/// 尽力回滚：回滚自己失败时只记日志，不往外抛。
+///
+/// 用在两种地方，它们都不是「可以安静失败」的地方：
+///
+/// - 迁移过程中出错时，先回滚再返回那个更具体的错误。若把回滚的失败一并返回，
+///   真正的原因（哪条语句挂了）反而被盖掉，那是更难查的方向；
+/// - `Transaction` 的移动赋值与析构，这两处本来就无处返回失败。
+///
+/// 但一定不能安静：回滚没成功意味着连接上还挂着半个事务，
+/// 下一次写入会莫名其妙地跟着一起被回滚。
+void rollbackWithoutMasking(Database& database, const QString& context) {
+  const Result<void> rolledBack = database.rollbackTransaction();
+  if (!rolledBack) {
+    logWrite(LogLevel::Warn,
+             QStringLiteral("%1：回滚失败（%2）").arg(context, rolledBack.error().message));
+  }
+}
+
 /// 迁移表的自检。版本号必须从 1 连续递增 —— 中间缺号意味着有人漏写了一条迁移，
 /// 而那会让后面所有库的结构与代码不一致。
 Result<void> checkMigrations(const QList<Migration>& migrations) {
@@ -280,7 +298,7 @@ Result<void> Database::open(const QString& filePath, QList<Migration> migrations
       for (const QString& statement : migration.statements) {
         const Result<void> done = execute(statement);
         if (!done) {
-          rollbackTransaction();
+          rollbackWithoutMasking(*this, QStringLiteral("迁移语句出错后的回滚"));
           return Result<void>::fail(
               makeError(ErrorCode::Io,
                         QStringLiteral("迁移 %1（%2）执行失败：%3")
@@ -292,13 +310,13 @@ Result<void> Database::open(const QString& filePath, QList<Migration> migrations
       const Result<void> recorded = setMetaValue(QString::fromLatin1(kMetaKeySchemaVersion),
                                                  QString::number(migration.version));
       if (!recorded) {
-        rollbackTransaction();
+        rollbackWithoutMasking(*this, QStringLiteral("迁移写版本号失败后的回滚"));
         return recorded;
       }
 
       const Result<void> committed = commitTransaction();
       if (!committed) {
-        rollbackTransaction();
+        rollbackWithoutMasking(*this, QStringLiteral("迁移提交失败后的回滚"));
         return committed;
       }
 
@@ -561,7 +579,7 @@ Transaction::Transaction(Transaction&& other) noexcept
 Transaction& Transaction::operator=(Transaction&& other) noexcept {
   if (this != &other) {
     if (!finished_ && database_ != nullptr) {
-      database_->rollbackTransaction();
+      rollbackWithoutMasking(*database_, QStringLiteral("事务被移动赋值时的回滚"));
     }
     database_ = other.database_;
     finished_ = other.finished_;
@@ -575,7 +593,7 @@ Transaction::~Transaction() {
   if (!finished_ && database_ != nullptr) {
     // 没提交就是回滚。这不是可选项：剩下的半个事务留在连接上，
     // 会让「后一次写入」莫名其妙地一起被回滚。
-    database_->rollbackTransaction();
+    rollbackWithoutMasking(*database_, QStringLiteral("未提交的事务在析构时的回滚"));
   }
 }
 
