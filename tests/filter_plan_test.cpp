@@ -281,8 +281,10 @@ void FilterPlanTest::multipleValuesShareOneFilter() {
   for (const FilterCondition& condition : entry.conditions) {
     if (condition.field == FilterField::AppPath) {
       ++appPaths;
-      QVERIFY(condition.appPath.endsWith(QStringLiteral("\\a.exe")) ||
-              condition.appPath.endsWith(QStringLiteral("\\b.exe")));
+      // 路径原样穿过整条链路：用户写的是反斜杠形式，清单里就该是反斜杠形式。
+      // 比较时才归一（`sameProcessIdentity`），存储与展开都不改写。
+      QVERIFY(condition.appPath == QStringLiteral("C:\\a.exe") ||
+              condition.appPath == QStringLiteral("C:\\b.exe"));
     } else if (condition.field == FilterField::Port) {
       ++ports;
       QVERIFY(condition.portLower == 80 || condition.portLower == 443);

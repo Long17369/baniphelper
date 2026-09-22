@@ -99,7 +99,9 @@ struct ConnectionCounters {
 /// 进程的**身份**：与 PID 无关，跨进程重启仍然成立。
 struct ProcessIdentity {
   /// 可执行文件全路径，Windows 上是 `C:\...` 形式的 DOS 路径。
-  /// 比较时**不区分大小写**，因为 Windows 文件系统不区分。
+  ///
+  /// 比较时**不区分大小写，也不区分分隔符方向**（`C:\a` 与 `C:/a` 是同一个文件）。
+  /// 归一由 `sameProcessIdentity` 负责，调用方不必自己预处理。
   QString imagePath;
 
   /// 文件名，只用于显示，不参与任何判定。

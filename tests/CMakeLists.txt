@@ -41,6 +41,10 @@ baniphelper_add_test(database baniphelper_database_test
   database_test.cpp
 )
 
+baniphelper_add_test(types baniphelper_types_test
+  types_test.cpp
+)
+
 baniphelper_add_test(rule_model baniphelper_rule_model_test
   rule_model_test.cpp
 )

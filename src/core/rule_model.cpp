@@ -286,6 +286,11 @@ Result<QString> normalizePortRange(const QString& text) {
 
 /// 路径里的非法字符检查。
 ///
+/// ⚠️ 这里用的是 **Windows 的文件名规则**（禁止 `"<>|` 与通配字符），
+/// 把平台差异放进了核心层，是全项目里少数几处例外之一。
+/// 理由是这个判断要在「用户敲完就报错」的时刻给出，而那时还没有任何平台调用；
+/// 真的做别的平台（S8）时，这里要按平台替换成对应的规则，或者下沉成平台接口。
+///
 /// `*` 与 `?` 在 Windows 上是通配字符，普通路径里出现它们一定是写错了；
 /// 通配模式单独放宽这两个。
 Result<void> checkPathCharacters(const QString& text, bool allowWildcards) {
@@ -302,24 +307,15 @@ Result<void> checkPathCharacters(const QString& text, bool allowWildcards) {
   return Result<void>::ok();
 }
 
-/// 去掉尾部多余的分隔符，但保留「D:\」这样的根形式。
-///
-/// 只在目录取值上用。留着尾部分隔符会让「D:\games」与「D:\games\」成为两个
-/// 看起来不同、实际相同的取值，界面与去重都会被它绕过去。
-QString stripTrailingSeparators(const QString& path) {
-  QString result = path;
-  while (result.size() > 1) {
-    const QChar last = result.at(result.size() - 1);
-    if (last != QLatin1Char('\\') && last != QLatin1Char('/')) {
-      break;
-    }
-    if (result.size() == 3 && result.at(1) == QLatin1Char(':')) {
-      break;
-    }
-    result.chop(1);
-  }
-  return result;
-}
+// 路径的三个模式都**只校验、不改写**：用户写什么就存什么。
+//
+// 曾经这里做过归一化（先是一段手写的「去尾部分隔符」，后来换成 `QDir::cleanPath`），
+// 两次都不对。手写那版把盘符判断这种 Windows 专有的东西带进了核心层；
+// 换成 `cleanPath` 之后虽然把两种分隔符写法收敛了，但代价是**用户写的路径被改掉了**：
+// 界面上变成正斜杠形式，`..` 被解开，数据一旦存进去就回不到用户写的样子。
+//
+// 正确的分界是：**存储只判断「合不合法」，比较才归一**（见 `sameProcessIdentity`）。
+// 「等价」本来就依赖平台，而且只在该判断的时候才需要判断。
 
 Result<QString> normalizeExecutablePath(const QString& text) {
   if (text.isEmpty()) {
@@ -363,7 +359,7 @@ Result<QString> normalizeDirectoryPath(const QString& text) {
   if (!characters) {
     return Result<QString>::fail(characters.error());
   }
-  return stripTrailingSeparators(text);
+  return text;
 }
 
 Result<QString> normalizeValueForShape(ValueShape shape, const QString& value) {

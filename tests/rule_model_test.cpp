@@ -311,18 +311,29 @@ void RuleModelTest::valuesAreNormalizedAndDeduplicated() {
   QVERIFY(normalizeCondition(range).hasValue());
   QCOMPARE(range.values.join(QLatin1Char(',')), QStringLiteral("2001:db8::1-2001:db8::ff"));
 
-  // 目录的尾部分隔符去掉，否则「D:\games」与「D:\games\」会变成两个取值。
+  // 路径**原样保留**：用户写什么就存什么，不改分隔符、也不去尾部分隔符。
+  // 曾经这里做过归一化，那是错的：归一是在「存储」层做了一件属于「比较」的事，
+  // 而且有损（`..` 会被解开），存进去就回不到用户写的样子。
   MatchCondition directory = makeCondition(QStringLiteral("proc"),
                                            QStringLiteral("dir"),
                                            QStringList{QStringLiteral("C:\\Tools\\bin\\")});
   QVERIFY(normalizeCondition(directory).hasValue());
-  QCOMPARE(directory.values.join(QLatin1Char(',')), QStringLiteral("C:\\Tools\\bin"));
+  QCOMPARE(directory.values.join(QLatin1Char(',')), QStringLiteral("C:\\Tools\\bin\\"));
 
-  // 盘符根目录要去不干净就不对了。
   MatchCondition driveRoot = makeCondition(
       QStringLiteral("proc"), QStringLiteral("dir"), QStringList{QStringLiteral("C:\\")});
   QVERIFY(normalizeCondition(driveRoot).hasValue());
   QCOMPARE(driveRoot.values.join(QLatin1Char(',')), QStringLiteral("C:\\"));
+
+  // 两种分隔符写法**不会**被合并成一个取值。合不合并都不影响语义：
+  // 同一个字段的多个条件是「或」，两个等价条件不会改变判定结果；
+  // 要不要把它们看成同一个文件，是 `sameProcessIdentity` 在比较时的事。
+  MatchCondition twoSeparators = makeCondition(
+      QStringLiteral("proc"),
+      QStringLiteral("set"),
+      QStringList{QStringLiteral("C:\\Tools\\a.exe"), QStringLiteral("C:/Tools/a.exe")});
+  QVERIFY(normalizeCondition(twoSeparators).hasValue());
+  QCOMPARE(twoSeparators.values.size(), 2);
 }
 
 void RuleModelTest::invalidValuesAreRejectedWithReasons() {
