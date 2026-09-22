@@ -7,13 +7,18 @@
 // 真实后端经装配点（createPlatformBackend）构造，因此本文件**不需要包含任何平台专有的头**，
 // 将来加了新平台也不用改这里 —— 装配点会自动指向那个平台。
 
+#include <QHostAddress>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTest>
+#include <QUdpSocket>
 #include <QUuid>
 
 #include <functional>
 
 #include "core/platform_backend.h"
 #include "platform/memory/backend.h"
+#include "platform/memory/conn_monitor.h"
 #include "platform/memory/filter_engine.h"
 #include "platform/memory/privilege.h"
 
@@ -119,6 +124,9 @@ class PlatformContractTest : public QObject {
   void memoryFilterEngineRemovesSeededOrphans();
   void killerAnswersMatchDeclaredCapabilities();
   void killerWillNotSilentlySucceed();
+  void connMonitorSnapshotIsWellFormed();
+  void connMonitorFindsOwnSocketsWhenItCanEnumerate();
+  void connMonitorRefusesEventsWhenNotDeclared();
 };
 
 void PlatformContractTest::backendIsComplete() {
@@ -136,6 +144,8 @@ void PlatformContractTest::capabilityDeclarationMatchesImplementation() {
     QVERIFY2(backend.filterEngine != nullptr,
              qPrintable(backends.label + " 后端没有装配过滤器引擎"));
     QVERIFY2(backend.killer != nullptr, qPrintable(backends.label + " 后端没有装配断连模块"));
+    QVERIFY2(backend.connMonitor != nullptr,
+             qPrintable(backends.label + " 后端没有装配连接监视模块"));
 
     // 实现了某个接口，就必须把对应的能力位声明为支持。
     // 声明与实际不一致会让界面上出现「灰按钮但其实是能用的」，或反过来 ——
@@ -158,6 +168,16 @@ void PlatformContractTest::capabilityDeclarationMatchesImplementation() {
              qPrintable(backends.label + " 后端的 FilterIPv4 声明与实现进度不一致"));
     QVERIFY2(backend.capabilities->isSupported(Capability::OrphanCleanup) == real,
              qPrintable(backends.label + " 后端的 OrphanCleanup 声明与实现进度不一致"));
+
+    // 连接枚举：S3.1 落地后真实后端能枚举端点表并解出进程标识（实测见
+    // docs/phases/03-observation.md 第 3.1 节），内存后端只能回放预置内容、枚举不了系统进程。
+    QVERIFY2(backend.capabilities->isSupported(Capability::ProcessEnumeration) == real,
+             qPrintable(backends.label + " 后端的 ProcessEnumeration 声明与实现进度不一致"));
+    // 事件驱动要等 S3.3 的 ETW，两个后端现在都不许声明 ——
+    // 声明了却订不上，界面就会去等一个永远不会来的事件。
+    QVERIFY2(
+        !backend.capabilities->isSupported(Capability::EventDrivenConnections),
+        qPrintable(backends.label + " 后端声明了 EventDrivenConnections，但事件源（S3.3）还没做"));
   });
 }
 
@@ -621,6 +641,239 @@ void PlatformContractTest::killerWillNotSilentlySucceed() {
     QCOMPARE(empty.value().requested, 0);
     QCOMPARE(empty.value().killed, 0);
     QCOMPARE(empty.value().failures.size(), 0);
+  });
+}
+
+/// 连接快照的形状必须满足接口约定：
+///
+/// - 地址文本不能为空、端口不能为 0；
+/// - 两端地址族一致（不一致的根本不是一条连接）；
+/// - **UDP 行的对端与方向必须是「未知」**（公开端点表里没有对端字段，已实测）；
+/// - **进程身份不允许编**：解不出可执行文件路径时就留空，
+///   而不是拿 PID 拼一个看起来像名字的东西 —— 那会让界面把错的程序名显示成事实。
+///
+/// 真实后端这边是对它真枚举出来的几百行做检查；内存后端那边先预置几行代表形状，
+/// 免得断言在空表上白白通过。
+void PlatformContractTest::connMonitorSnapshotIsWellFormed() {
+  forEachBackend([](const Backends& backends) {
+    if (backends.label == QStringLiteral("memory")) {
+      // 代表形状：一条 IPv4 TCP、一条 IPv6 TCP、一条对端不可知的 UDP，
+      // 以及一条**解不出进程信息**的行（未提权时真实后端上这种行是多数）。
+      auto* monitor = static_cast<MemoryConnMonitor*>(backends.first.connMonitor.get());
+      QList<ConnectionSnapshot> seeded;
+
+      ConnectionSnapshot tcp;
+      tcp.key.protocol = TransportProtocol::Tcp;
+      tcp.key.local.address = Address{QStringLiteral("127.0.0.1"), AddressFamily::V4};
+      tcp.key.local.port = 50000;
+      tcp.key.remote.address = Address{QStringLiteral("223.5.5.5"), AddressFamily::V4};
+      tcp.key.remote.port = 443;
+      tcp.process.identity.imagePath = QStringLiteral("C:\\Windows\\notepad.exe");
+      tcp.process.identity.displayName = QStringLiteral("notepad.exe");
+      tcp.process.pid = 1234;
+      tcp.direction = Direction::Out;
+      tcp.observedAt = QDateTime::currentDateTime();
+      seeded.append(tcp);
+
+      ConnectionSnapshot tcp6 = tcp;
+      tcp6.key.local.address = Address{QStringLiteral("::1"), AddressFamily::V6};
+      tcp6.key.remote.address = Address{QStringLiteral("2001:db8::1"), AddressFamily::V6};
+      tcp6.direction = Direction::In;
+      seeded.append(tcp6);
+
+      ConnectionSnapshot udp;
+      udp.key.protocol = TransportProtocol::Udp;
+      udp.key.local.address = Address{QStringLiteral("0.0.0.0"), AddressFamily::V4};
+      udp.key.local.port = 5353;
+      udp.key.remote.address = Address{QStringLiteral("0.0.0.0"), AddressFamily::V4};
+      udp.key.remote.port = 0;
+      udp.direction = Direction::Unknown;
+      udp.process.pid = 4321;  // 刻意不给进程身份：解不出来时必须留空
+      udp.observedAt = QDateTime::currentDateTime();
+      seeded.append(udp);
+
+      monitor->setSnapshot(seeded);
+    }
+
+    const Result<QList<ConnectionSnapshot>> snap = backends.first.connMonitor->snapshot();
+    QVERIFY2(snap.hasValue(),
+             qPrintable(
+                 QStringLiteral("%1 后端取连接快照失败：%2")
+                     .arg(backends.label, snap.errorOrNull() ? snap.error().message : QString())));
+
+    for (const ConnectionSnapshot& one : snap.value()) {
+      const QString where =
+          QStringLiteral("%1 后端的快照行 [%2 %3:%4 → %5:%6]")
+              .arg(backends.label,
+                   one.key.protocol == TransportProtocol::Tcp ? QStringLiteral("TCP")
+                                                              : QStringLiteral("UDP"))
+              .arg(one.key.local.address.text)
+              .arg(one.key.local.port)
+              .arg(one.key.remote.address.text)
+              .arg(one.key.remote.port);
+
+      QVERIFY2(!one.key.local.address.text.trimmed().isEmpty(),
+               qPrintable(where + " 的本地地址是空的"));
+      QVERIFY2(one.key.local.port != 0, qPrintable(where + " 的本地端口是 0"));
+      QVERIFY2(one.key.local.address.family == one.key.remote.address.family,
+               qPrintable(where + " 的两端地址族不一致，这不可能是一条连接"));
+      QVERIFY2(one.observedAt.isValid(), qPrintable(where + " 没有采样时刻"));
+
+      if (one.key.protocol == TransportProtocol::Udp) {
+        QVERIFY2(one.key.remote.port == 0,
+                 qPrintable(where + " 是 UDP 行却带着非零对端端口 —— 公开数据源里没有这个字段，"
+                                    "带出来的一定是别的东西"));
+        QVERIFY2(one.direction == Direction::Unknown,
+                 qPrintable(where + " 是 UDP 行却没把方向标成未知：对端都不知道，方向无从谈起"));
+      } else {
+        QVERIFY2(one.key.remote.port != 0, qPrintable(where + " 是 TCP 行但对端端口是 0"));
+        QVERIFY2(
+            one.direction != Direction::Unknown,
+            qPrintable(where +
+                       " 是 TCP 行却报了个未知方向：四元组与监听端口集都在，方向是判得出来的"));
+      }
+
+      // 进程身份不允许编：有路径就必须有显示名，没路径就不许有显示名。
+      if (one.process.identity.imagePath.isEmpty()) {
+        QVERIFY2(one.process.identity.displayName.isEmpty(),
+                 qPrintable(where + " 解不出可执行文件路径，却给了显示名「" +
+                            one.process.identity.displayName + "」—— 那是编的"));
+      } else {
+        QVERIFY2(!one.process.identity.displayName.isEmpty(),
+                 qPrintable(where + " 有可执行文件路径却没有显示名"));
+      }
+    }
+  });
+}
+
+/// 会枚举连接的后端，必须能找到**刚刚亲手建立的**那几条连接。
+///
+/// 这是 S3.1 唯一真正的行为断言：整机条数与系统工具对照属于演练
+/// （`tmp/verify-s3.1.ps1`），而「我造的这条在不在、方向对不对」必须在单元测试里就成立。
+void PlatformContractTest::connMonitorFindsOwnSocketsWhenItCanEnumerate() {
+  forEachBackend([](const Backends& backends) {
+    if (!backends.first.capabilities->isSupported(Capability::ProcessEnumeration)) {
+      qInfo().noquote() << QStringLiteral(
+                               "后端 %1：不声明 ProcessEnumeration，"
+                               "本次跳过行为核对（它只回放预置内容）")
+                               .arg(backends.label);
+      return;
+    }
+
+    // 造一对可控的 TCP 连接：一个在 127.0.0.1 上监听，一个主动连过去。
+    // 同一对四元组因此会有两条记录、方向相反 —— 一条必须判入站、一条必须判出站。
+    QTcpServer server;
+    QVERIFY2(server.listen(QHostAddress::LocalHost, 0),
+             qPrintable(QStringLiteral("监听 127.0.0.1 失败：%1").arg(server.errorString())));
+    const quint16 listenPort = server.serverPort();
+    QVERIFY(listenPort != 0);
+
+    QTcpSocket client;
+    client.connectToHost(QHostAddress::LocalHost, listenPort);
+    QVERIFY2(client.waitForConnected(5000),
+             qPrintable(QStringLiteral("本机 loopback 连接建不起来，测试前提不成立：%1")
+                            .arg(client.errorString())));
+    QVERIFY2(server.waitForNewConnection(5000), "监听套接字没等到连接，测试前提不成立");
+    QVERIFY(server.nextPendingConnection() != nullptr);
+    const quint16 clientPort = client.localPort();
+    QVERIFY(clientPort != 0);
+
+    // 只绑定的 UDP 端点，两个地址族各一个。
+    QUdpSocket udp4;
+    QVERIFY2(udp4.bind(QHostAddress::LocalHost, 0),
+             qPrintable(QStringLiteral("绑定 UDP IPv4 失败：%1").arg(udp4.errorString())));
+    const quint16 udp4Port = udp4.localPort();
+    QUdpSocket udp6;
+    const bool udp6Bound = udp6.bind(QHostAddress::LocalHostIPv6, 0);
+
+    const Result<QList<ConnectionSnapshot>> snap = backends.first.connMonitor->snapshot();
+    QVERIFY2(snap.hasValue(),
+             qPrintable(
+                 QStringLiteral("%1 后端取连接快照失败：%2")
+                     .arg(backends.label, snap.errorOrNull() ? snap.error().message : QString())));
+
+    bool foundOutbound = false;
+    bool foundInbound = false;
+    bool foundUdp4 = false;
+    bool foundUdp6 = false;
+    for (const ConnectionSnapshot& one : snap.value()) {
+      const ConnectionKey& key = one.key;
+      if (key.protocol == TransportProtocol::Tcp) {
+        if (key.local.port == clientPort && key.remote.port == listenPort) {
+          foundOutbound = true;
+          QVERIFY2(one.direction == Direction::Out,
+                   "主动连出去的那条被判成了入站：它的本地端口是临时口、不在监听端口集里");
+        }
+        if (key.local.port == listenPort && key.remote.port == clientPort) {
+          foundInbound = true;
+          QVERIFY2(one.direction == Direction::In,
+                   "被接受的那条被判成了出站：它的本地端口就是监听端口，"
+                   "判成出站多半是按地址而不是按端口比的（监听常绑在 0.0.0.0）");
+        }
+      } else {
+        if (key.local.port == udp4Port) {
+          foundUdp4 = true;
+          QVERIFY2(key.remote.port == 0 && one.direction == Direction::Unknown,
+                   "刚绑定的 UDP 端点不该带对端或方向");
+        }
+        if (udp6Bound && key.local.port == udp6.localPort() &&
+            key.local.address.family == AddressFamily::V6) {
+          foundUdp6 = true;
+          QVERIFY2(key.remote.port == 0 && one.direction == Direction::Unknown,
+                   "刚绑定的 IPv6 UDP 端点不该带对端或方向");
+        }
+      }
+    }
+
+    QVERIFY2(
+        foundOutbound,
+        qPrintable(QStringLiteral("%1 后端的快照里没有刚刚建立的出站连接").arg(backends.label)));
+    QVERIFY2(foundInbound,
+             qPrintable(QStringLiteral("%1 后端的快照里没有被接受的入站连接").arg(backends.label)));
+    QVERIFY2(
+        foundUdp4,
+        qPrintable(QStringLiteral("%1 后端的快照里没有刚绑定的 UDP 端点").arg(backends.label)));
+    if (udp6Bound) {
+      QVERIFY2(
+          foundUdp6,
+          qPrintable(
+              QStringLiteral("%1 后端的快照里没有刚绑定的 IPv6 UDP 端点").arg(backends.label)));
+    }
+  });
+}
+
+/// 事件订阅：没声明能力就必须**明确报不支持**，声明了就必须真的订上。
+///
+/// 这条守的是「静默降级」：返回一个永远不触发的事件句柄，界面会安安静静地
+/// 等一个不会来的事件，而「已退化成轮询」以及它带来的「短连接会漏」就不会被标注出来。
+void PlatformContractTest::connMonitorRefusesEventsWhenNotDeclared() {
+  forEachBackend([](const Backends& backends) {
+    const bool declared =
+        backends.first.capabilities->isSupported(Capability::EventDrivenConnections);
+    const Result<SubscriptionId> subscription =
+        backends.first.connMonitor->subscribe([](const ConnectionEvent&) {});
+
+    if (declared) {
+      QVERIFY2(subscription.hasValue(),
+               qPrintable(QStringLiteral("%1 后端声明了事件驱动却订不上：%2")
+                              .arg(backends.label,
+                                   subscription.errorOrNull() ? subscription.error().message
+                                                              : QString())));
+      QVERIFY(subscription.value() != kInvalidSubscription);
+      QVERIFY(backends.first.connMonitor->unsubscribe(subscription.value()).hasValue());
+    } else {
+      QVERIFY2(
+          !subscription.hasValue(),
+          qPrintable(backends.label + " 后端没声明 EventDrivenConnections，subscribe 却成功了 —— "
+                                      "上层会去等一个永远不会来的事件"));
+      QVERIFY(subscription.error().code == ErrorCode::NotSupported);
+      QVERIFY2(!subscription.error().message.trimmed().isEmpty(),
+               "报不支持时必须给出非空说明，否则界面上只剩一个没有任何解释的灰按钮");
+    }
+
+    // 退订必须幂等且对未知句柄成功：退出路径会无条件调一次收尾。
+    QVERIFY(backends.first.connMonitor->unsubscribe(kInvalidSubscription).hasValue());
+    QVERIFY(backends.first.connMonitor->unsubscribe(0x5EED1234).hasValue());
   });
 }
 

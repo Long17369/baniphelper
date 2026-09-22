@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "core/declared_capabilities.h"
+#include "platform/win/conn_monitor.h"
 #include "platform/win/filter_engine.h"
 #include "platform/win/killer.h"
 #include "platform/win/paths.h"
@@ -29,11 +30,19 @@ Result<PlatformBackend> createPlatformBackend(const QString& singleInstanceName)
   // `KillTcpV6` **不声明** —— 本平台没有等价接口，而且不允许用户态发原始 TCP 报文，
   // 连自己构造一个 RST 都做不到。声明了却做不到比不声明更糟：
   // 用户会以为 IPv6 连接也能断，点下去才发现不行。
+  //
+  // `ProcessEnumeration` 在 S3.1 落地：端点表给出 PID，再由 `QueryFullProcessImageNameW`
+  // 解出可执行文件路径。⚠️ 未提权时解不出来的是**大多数**（实测本机 52 个 PID 只有 20 个能解），
+  // 但能力位的语义是「这个平台提供这项能力」而不是「每一行都解得出来」：
+  // 解不出的行会如实留空，界面显示「读不到程序信息」，不冒名字。
+  //
+  // `EventDrivenConnections` **不声明**（S3.3 才做）。
   CapabilitySet declared;
   declared.add(Capability::FilterIPv4);
   declared.add(Capability::FilterIPv6);
   declared.add(Capability::KillTcpV4);
   declared.add(Capability::OrphanCleanup);
+  declared.add(Capability::ProcessEnumeration);
   declared.add(Capability::Elevation);
   declared.add(Capability::SingleInstance);
 
@@ -44,6 +53,7 @@ Result<PlatformBackend> createPlatformBackend(const QString& singleInstanceName)
   backend.filterEngine = std::make_unique<WinFilterEngine>();
   backend.killer = std::make_unique<WinKiller>();
   backend.paths = std::make_unique<WinPaths>();
+  backend.connMonitor = std::make_unique<WinConnMonitor>();
 
   const QString name =
       singleInstanceName.isEmpty() ? QString::fromLatin1(kSingleInstanceName) : singleInstanceName;

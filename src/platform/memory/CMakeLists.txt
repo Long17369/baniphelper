@@ -9,6 +9,7 @@
 
 add_library(baniphelper_platform_memory STATIC
   backend.cpp
+  conn_monitor.cpp
   filter_engine.cpp
   killer.cpp
   paths.cpp

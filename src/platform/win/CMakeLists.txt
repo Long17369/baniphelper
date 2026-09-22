@@ -11,6 +11,7 @@
 
 add_library(baniphelper_backend_impl STATIC
   backend.cpp
+  conn_monitor.cpp
   filter_engine.cpp
   filter_plan.cpp
   killer.cpp

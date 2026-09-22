@@ -103,6 +103,7 @@ flowchart LR
 
 | 时间 | 接口 | 变更 | 触发原因 |
 | --- | --- | --- | --- |
+| 2026-09-22 | `Direction`（值类型） | 增加 `Unknown` 取值 | UDP 行确实判不出方向：公开端点表里没有对端字段（实测见 [phases/03-observation.md](phases/03-observation.md) 第 3.1 节）。原来的两个取值逼着实现「挑一个填上」，而猜出来的方向会一路走进记录与界面。规则侧不受影响：规则里的方向仍然只有 out/in/both |
 | 2026-09-22 | `ISingleInstance` | 增加 `listenForActivation` 与 `stopListening` | S1.3 冻结时只写了发送端，接收端一直没有入口；S1.8 的托盘外壳要当接收端，而接收端只能落在 `platform/` 下。见 [phases/01-foundation.md](phases/01-foundation.md) 第 3.1 节的 S1.16 |
 
 ### 3.3 汇合点与里程碑

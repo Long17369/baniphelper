@@ -3,7 +3,7 @@
 # 一律用 CTest 注册，因此 `ctest --preset debug` 与 `cmake --workflow --preset debug`
 # 都能直接跑，不需要记第二套命令。
 
-find_package(Qt6 REQUIRED COMPONENTS Test)
+find_package(Qt6 REQUIRED COMPONENTS Test Network)
 
 # Qt Test 的测试类需要 moc。tests 是 src 的兄弟目录，不继承 src/ui 里
 # qt_standard_project_setup() 的设置，所以在这里单独打开。
@@ -81,4 +81,7 @@ target_link_libraries(baniphelper_platform_contract_test PRIVATE
   BanIPHelper::PlatformMemory
   # 真实后端：提供 createPlatformBackend 的实现，由 platform/CMakeLists.txt 在编译期挑。
   BanIPHelper::Backend
+  # 契约测试要自己造一对可控的 TCP 连接与 UDP 端点，才能核对「刚建立的连接在不在、方向对不对」。
+  # 核心层的 Qt6::Network 是 PRIVATE 的，include 目录不会传过来，所以这里显式链一次。
+  Qt6::Network
 )

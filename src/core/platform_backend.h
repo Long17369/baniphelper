@@ -6,6 +6,7 @@
 
 #include "core/icapabilities.h"
 #include "core/result.h"
+#include "platform/api/iconnmonitor.h"
 #include "platform/api/ifilterengine.h"
 #include "platform/api/ikiller.h"
 #include "platform/api/ipaths.h"
@@ -49,6 +50,12 @@ struct PlatformBackend {
   /// 日志必须在启动最早期就起来，而上层（`ui/`）不被允许直接问系统要路径，
   /// 所以它只能从这里拿 —— 等不到配置子系统 S1.5 做完。
   std::unique_ptr<IPaths> paths;
+
+  /// 连接发现（阶段三 S3.1）。
+  ///
+  /// 与 `filterEngine` 并列而不是挂在它下面：观测与封禁是两条独立的数据源，
+  /// 一个平台的过滤器引擎可用不代表它能枚举连接（反之亦然）。
+  std::unique_ptr<IConnMonitor> connMonitor;
 
   /// 该后端声明具备哪些能力。上层据此决定哪些操作要置灰。
   std::unique_ptr<ICapabilities> capabilities;

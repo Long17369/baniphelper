@@ -4,7 +4,8 @@ namespace baniphelper::core {
 
 bool PlatformBackend::isComplete() const {
   return privilege != nullptr && singleInstance != nullptr && filterEngine != nullptr &&
-         killer != nullptr && paths != nullptr && capabilities != nullptr && !name.isEmpty();
+         killer != nullptr && paths != nullptr && connMonitor != nullptr &&
+         capabilities != nullptr && !name.isEmpty();
 }
 
 }  // namespace baniphelper::core

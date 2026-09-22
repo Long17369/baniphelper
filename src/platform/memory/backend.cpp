@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "core/declared_capabilities.h"
+#include "platform/memory/conn_monitor.h"
 #include "platform/memory/filter_engine.h"
 #include "platform/memory/killer.h"
 #include "platform/memory/paths.h"
@@ -31,12 +32,19 @@ PlatformBackend makeMemoryBackend(const QString& singleInstanceName) {
                                      QStringLiteral("过滤器引擎的下发能力尚未实现，阶段二 S2.4"));
   capabilities->setUnsupportedReason(Capability::FilterIPv6,
                                      QStringLiteral("过滤器引擎的下发能力尚未实现，阶段二 S2.4"));
+  // 内存后端枚举不了系统里的进程，所以**不声明** ProcessEnumeration。
+  // 它照样能回放预置的连接快照，但那是「替身能跑」，不是「这个后端做得到这件事」。
+  capabilities->setUnsupportedReason(
+      Capability::ProcessEnumeration,
+      QStringLiteral("内存后端只回放预置的快照，不枚举系统里的进程；"
+                     "它的用途是当契约测试的对照物与界面开发期的替身"));
 
   backend.capabilities = std::move(capabilities);
   backend.privilege = std::make_unique<MemoryPrivilege>();
   backend.filterEngine = std::make_unique<MemoryFilterEngine>();
   backend.killer = std::make_unique<MemoryKiller>();
   backend.paths = std::make_unique<MemoryPaths>();
+  backend.connMonitor = std::make_unique<MemoryConnMonitor>();
 
   const QString name =
       singleInstanceName.isEmpty() ? QString::fromLatin1(kSingleInstanceName) : singleInstanceName;

@@ -34,9 +34,16 @@ enum class TransportProtocol : std::uint8_t {
 };
 
 /// 数据流方向，站在本机视角：Out 是本机发起，In 是外部发起。
+///
+/// ⚠️ `Unknown` 是给**观测数据**留的，不是给规则留的：规则里的方向只有 out/in/both，
+/// 那是用户表达意图，不允许含糊。而观测侧有时确实判不出来 —— 例如 UDP 的本地绑定端点：
+/// 公开的端点表里没有对端字段，方向无从谈起（实测见 docs/phases/03-observation.md 第 3.1 节）。
+/// 这类行必须用 `Unknown`，**不允许挑一个方向填上**：
+/// 猜出来的方向会一路走进记录与界面，而且事后没法分辨哪一行是猜的。
 enum class Direction : std::uint8_t {
   Out,
   In,
+  Unknown,
 };
 
 /// IP 地址。
@@ -135,6 +142,16 @@ struct PlatformTargetId {
 // ---------------------------------------------------------------------------
 
 /// 连接的一次观测结果。
+///
+/// 两条与 UDP 有关的硬性约定（不是实现细节，是接口语义）：
+///
+/// - **`TransportProtocol::Udp` 的行，`remote` 的内容不可信**：公开的端点表
+///   （`GetExtendedUdpTable`）只有本地地址、本地端口与进程，没有对端字段。
+///   因此实现把 `remote` 写成该地址族的**通配取值**（`0.0.0.0:0` / `[::]:0`），
+///   含义是「未指定/不可知」，**不是**「对端是 0.0.0.0」。
+///   真实对端要等阶段三 S3.4 的事件源给出（那里有完整四元组）。
+/// - 同理，UDP 行的 `direction` 一律是 `Direction::Unknown`，
+///   因为方向取决于对端是谁，而对端恰恰不知道。
 struct ConnectionSnapshot {
   ConnectionKey key;
   ProcessRef process;
