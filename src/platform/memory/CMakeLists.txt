@@ -15,6 +15,7 @@ add_library(baniphelper_platform_memory STATIC
   paths.cpp
   privilege.cpp
   single_instance.cpp
+  traffic_stats.cpp
 )
 add_library(BanIPHelper::PlatformMemory ALIAS baniphelper_platform_memory)
 

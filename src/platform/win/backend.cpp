@@ -9,6 +9,7 @@
 #include "platform/win/paths.h"
 #include "platform/win/privilege.h"
 #include "platform/win/single_instance.h"
+#include "platform/win/traffic_stats.h"
 
 namespace baniphelper::core {
 
@@ -42,6 +43,11 @@ Result<PlatformBackend> createPlatformBackend(const QString& singleInstanceName)
   // （会把记录表打爆），UDP 行仍然只从 snapshot() 来 —— 见 WinConnMonitor 的类注释。
   // 起会话需要提权，权限不足时 subscribe 报 NotPermitted 并说明怎么办，
   // 不假装成功。
+  // `TrafficStatsTcp` 在 S3.2 落地：TCP 按连接的扩展统计（eStats）。
+  // ⚠️ 实测两条要记住的：未启用采集就读会拿到**垃圾值且报成功**（所以实现自己记账）；
+  // 未提权时 `SetPerTcpConnectionEStats` 返回拒绝访问。
+  // `TrafficStatsUdp` **不声明** —— Windows 没有 UDP 版的按连接统计，
+  // UDP 的字节数要走事件源（S3.4）。声明了却做不到比不声明更糟。
   CapabilitySet declared;
   declared.add(Capability::FilterIPv4);
   declared.add(Capability::FilterIPv6);
@@ -49,6 +55,7 @@ Result<PlatformBackend> createPlatformBackend(const QString& singleInstanceName)
   declared.add(Capability::OrphanCleanup);
   declared.add(Capability::ProcessEnumeration);
   declared.add(Capability::EventDrivenConnections);
+  declared.add(Capability::TrafficStatsTcp);
   declared.add(Capability::Elevation);
   declared.add(Capability::SingleInstance);
 
@@ -60,6 +67,7 @@ Result<PlatformBackend> createPlatformBackend(const QString& singleInstanceName)
   backend.killer = std::make_unique<WinKiller>();
   backend.paths = std::make_unique<WinPaths>();
   backend.connMonitor = std::make_unique<WinConnMonitor>();
+  backend.trafficStats = std::make_unique<WinTrafficStats>();
 
   const QString name =
       singleInstanceName.isEmpty() ? QString::fromLatin1(kSingleInstanceName) : singleInstanceName;

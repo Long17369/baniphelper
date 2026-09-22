@@ -12,6 +12,7 @@
 #include "platform/api/ipaths.h"
 #include "platform/api/iprivilege.h"
 #include "platform/api/isingleinstance.h"
+#include "platform/api/itrafficstats.h"
 
 namespace baniphelper::core {
 
@@ -56,6 +57,13 @@ struct PlatformBackend {
   /// 与 `filterEngine` 并列而不是挂在它下面：观测与封禁是两条独立的数据源，
   /// 一个平台的过滤器引擎可用不代表它能枚举连接（反之亦然）。
   std::unique_ptr<IConnMonitor> connMonitor;
+
+  /// 字节统计（阶段三 S3.2）。
+  ///
+  /// 同样与 `connMonitor` 并列：能枚举连接不等于能拿到字节数
+  /// （本机上 UDP 就是「能枚举、但没有按连接字节数」）。
+  /// 两者合成一个之后，「看得到连接但看不到流量」这个状态就表达不出来了。
+  std::unique_ptr<ITrafficStats> trafficStats;
 
   /// 该后端声明具备哪些能力。上层据此决定哪些操作要置灰。
   std::unique_ptr<ICapabilities> capabilities;

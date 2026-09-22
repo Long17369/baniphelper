@@ -19,6 +19,7 @@ add_library(baniphelper_backend_impl STATIC
   paths.cpp
   privilege.cpp
   single_instance.cpp
+  traffic_stats.cpp
 )
 
 target_link_libraries(baniphelper_backend_impl PUBLIC

@@ -9,6 +9,7 @@
 #include "platform/memory/paths.h"
 #include "platform/memory/privilege.h"
 #include "platform/memory/single_instance.h"
+#include "platform/memory/traffic_stats.h"
 
 namespace baniphelper::core {
 
@@ -21,9 +22,12 @@ PlatformBackend makeMemoryBackend(const QString& singleInstanceName) {
   // 同一套「能不能断」的答案（UDP 不行、IPv6 不行），所以如实声明。
   // `EventDrivenConnections` 同理：`MemoryConnMonitor` 真的把投进去的事件送到订阅者手上，
   // 因此「订上了就真收得到」这条契约能在不需要 ETW、也不需要提权的条件下被验到底。
+  // `TrafficStatsTcp` 也是真的模拟了：预置计数 → 启用 → 读，与真实后端同一套说法
+  // （包括「没启用就读必须失败」与「批量读不整体失败」）。
   CapabilitySet declared;
   declared.add(Capability::KillTcpV4);
   declared.add(Capability::EventDrivenConnections);
+  declared.add(Capability::TrafficStatsTcp);
   declared.add(Capability::Elevation);
   declared.add(Capability::SingleInstance);
 
@@ -48,6 +52,7 @@ PlatformBackend makeMemoryBackend(const QString& singleInstanceName) {
   backend.killer = std::make_unique<MemoryKiller>();
   backend.paths = std::make_unique<MemoryPaths>();
   backend.connMonitor = std::make_unique<MemoryConnMonitor>();
+  backend.trafficStats = std::make_unique<MemoryTrafficStats>();
 
   const QString name =
       singleInstanceName.isEmpty() ? QString::fromLatin1(kSingleInstanceName) : singleInstanceName;

@@ -21,6 +21,7 @@
 #include "platform/memory/conn_monitor.h"
 #include "platform/memory/filter_engine.h"
 #include "platform/memory/privilege.h"
+#include "platform/memory/traffic_stats.h"
 
 using namespace baniphelper::core;
 
@@ -128,6 +129,8 @@ class PlatformContractTest : public QObject {
   void connMonitorFindsOwnSocketsWhenItCanEnumerate();
   void connMonitorEventsMatchDeclaredCapabilities();
   void connMonitorDeliversEmittedEvents();
+  void trafficStatsRefusesReadBeforeCollection();
+  void memoryTrafficStatsDeliversProgrammedCounters();
 };
 
 void PlatformContractTest::backendIsComplete() {
@@ -182,6 +185,14 @@ void PlatformContractTest::capabilityDeclarationMatchesImplementation() {
     QVERIFY2(backend.capabilities->isSupported(Capability::EventDrivenConnections),
              qPrintable(backends.label + " 后端实现了事件订阅却没声明 EventDrivenConnections，"
                                          "界面上会把它显示成「只能轮询」"));
+
+    // 字节统计（S3.2）：TCP 两侧都声明（内存后端同样能「启用 → 读」），
+    // 而 **UDP 两侧都不许声明** —— Windows 没有 UDP 版的按连接扩展统计，
+    // 内存后端在这里假装能做到的话，界面就会按「UDP 也能看字节数」来布局。
+    QVERIFY2(backend.capabilities->isSupported(Capability::TrafficStatsTcp),
+             qPrintable(backends.label + " 后端实现了 TCP 字节统计却没声明 TrafficStatsTcp"));
+    QVERIFY2(!backend.capabilities->isSupported(Capability::TrafficStatsUdp),
+             qPrintable(backends.label + " 后端声明了 UDP 字节统计，但按连接的 UDP eStats 不存在"));
   });
 }
 
@@ -950,6 +961,128 @@ void PlatformContractTest::connMonitorDeliversEmittedEvents() {
   const Result<SubscriptionId> empty = monitor.subscribe(ConnectionEventSink());
   QVERIFY2(!empty.hasValue(), "空回调的订阅被接受了：界面会以为在等事件，实际永远等不到");
   QCOMPARE(empty.error().code, ErrorCode::InvalidArgument);
+}
+
+/// 字节统计的契约：**没启用采集就绝不许给出值**。
+///
+/// 真实实现里这条不是防御性代码，而是硬要求：实测
+/// `GetPerTcpConnectionEStats` 在未启用采集时会**返回成功并给出未初始化内存里的垃圾值**。
+/// 实现不自己记账的话，界面就会把垃圾当流量显示出去，而且永远不会报错。
+void PlatformContractTest::trafficStatsRefusesReadBeforeCollection() {
+  forEachBackend([](const Backends& backends) {
+    ITrafficStats& stats = *backends.first.trafficStats;
+    const ConnectionKey ghost = makeConnectionKey(TransportProtocol::Tcp, AddressFamily::V4);
+
+    const Result<ConnectionCounters> cold = stats.read(ghost);
+    QVERIFY2(!cold.hasValue(),
+             qPrintable(backends.label + " 后端在没启用采集时就读出了值："
+                                         "真实实现的这条路径拿到的是垃圾值，不能信"));
+    QVERIFY2(!cold.errorOrNull()->message.trimmed().isEmpty(),
+             "报「还不能读」时必须说清要先 enableCollection");
+
+    // 对一条根本不存在的连接启用：提权后的真实后端报「找不到」，
+    // 未提权时连第一关都过不去（`SetPerTcpConnectionEStats` 返回拒绝访问）。
+    const Result<bool> elevatedResult = backends.first.privilege->isElevated();
+    QVERIFY(elevatedResult.hasValue());
+    const Result<void> enabled = stats.enableCollection(ghost);
+    QVERIFY2(!enabled.hasValue(), "对一条不存在的连接启用采集居然成功了");
+    if (elevatedResult.value()) {
+      QCOMPARE(enabled.error().code, ErrorCode::NotFound);
+    } else {
+      QVERIFY2(enabled.error().code == ErrorCode::NotPermitted ||
+                   enabled.error().code == ErrorCode::NotFound,
+               qPrintable(QStringLiteral("%1 后端未提权时的失败分类不对：%2")
+                              .arg(backends.label, enabled.error().message)));
+    }
+    QVERIFY(!enabled.error().message.trimmed().isEmpty());
+
+    // UDP 一律明确不支持：按连接的 UDP 扩展统计在 Windows 上不存在。
+    const Result<void> udp =
+        stats.enableCollection(makeConnectionKey(TransportProtocol::Udp, AddressFamily::V4));
+    QVERIFY2(!udp.hasValue(), "UDP 的按连接统计被接受了，但那个接口根本不存在");
+    QCOMPARE(udp.error().code, ErrorCode::NotSupported);
+    QVERIFY(!udp.error().message.trimmed().isEmpty());
+
+    // 停止采集是幂等的：退出路径会无条件调一次收尾。
+    QVERIFY(stats.disableCollection(ghost).hasValue());
+    QVERIFY(stats.disableCollection(makeConnectionKey(TransportProtocol::Tcp, AddressFamily::V6))
+                .hasValue());
+
+    // 批量读**不整体失败**：连接一直在建立与消失，「快照里有、读的时候没了」是常态。
+    // 拿不到的那一条用值类型自己的语义表示 —— 空 `since` = 该连接拿不到计数。
+    const QList<ConnectionKey> batch = {ghost,
+                                        makeConnectionKey(TransportProtocol::Tcp, AddressFamily::V6)};
+    const Result<QList<ConnectionCounters>> many = stats.readMany(batch);
+    QVERIFY2(many.hasValue(),
+             qPrintable(QStringLiteral("%1 后端的批量读整批失败了：%2")
+                            .arg(backends.label,
+                                 many.errorOrNull() ? many.error().message : QString())));
+    QCOMPARE(many.value().size(), batch.size());
+    for (const ConnectionCounters& one : many.value()) {
+      QVERIFY2(one.since.isNull(),
+               "拿不到计数的条目必须留空 since（无有效起点），不能拿一个 0 冒充流量");
+    }
+  });
+}
+
+/// 「预置了就真读得到、启用了才读得到」：用内存后端验到底。
+///
+/// 真实后端要提权、还依赖机器上真有一条连接，做不成无条件可重复的断言；
+/// 而这几条语义（启用前拒读、重复启用不重置起点、连接消失后的两种表现）
+/// 必须由**受控输入**来验。真实后端的行为证据在阶段三的演练里。
+void PlatformContractTest::memoryTrafficStatsDeliversProgrammedCounters() {
+  MemoryTrafficStats stats;
+  const ConnectionKey key = makeConnectionKey(TransportProtocol::Tcp, AddressFamily::V4);
+
+  // 没预置就启用 → 找不到：内存后端不凭一个四元组凭空造出一条连接。
+  const Result<void> tooEarly = stats.enableCollection(key);
+  QVERIFY2(!tooEarly.hasValue(), "内存后端对没预置的连接启用成功了");
+  QCOMPARE(tooEarly.error().code, ErrorCode::NotFound);
+
+  ConnectionCounters programmed;
+  programmed.bytesOut = 123456;
+  programmed.bytesIn = 654321;
+  programmed.segmentsOut = 100;
+  programmed.segmentsIn = 200;
+  stats.setCounters(key, programmed);
+
+  QVERIFY(stats.enableCollection(key).hasValue());
+  QVERIFY2(stats.enableCollection(key).hasValue(), "对已启用的连接重复启用必须安全");
+
+  const Result<ConnectionCounters> first = stats.read(key);
+  QVERIFY2(first.hasValue(),
+           qPrintable(first.errorOrNull() ? first.error().message : QString()));
+  QCOMPARE(first.value().bytesOut, std::uint64_t(123456));
+  QCOMPARE(first.value().bytesIn, std::uint64_t(654321));
+  QCOMPARE(first.value().segmentsOut, std::uint64_t(100));
+  QCOMPARE(first.value().segmentsIn, std::uint64_t(200));
+  QVERIFY2(!first.value().since.isNull(),
+           "since 必须填上：界面靠它说明计数从哪一刻起有效");
+
+  // 重复启用**不能把起点往后挪**，否则那个下限会每次采样都往后漂。
+  const QDateTime since = first.value().since;
+  QVERIFY(stats.enableCollection(key).hasValue());
+  const Result<ConnectionCounters> second = stats.read(key);
+  QVERIFY(second.hasValue());
+  QCOMPARE(second.value().since, since);
+
+  // 连接消失：单条读要明确报「找不到」，批量读则用空 since 表示。
+  stats.forget(key);
+  const Result<ConnectionCounters> gone = stats.read(key);
+  QVERIFY2(!gone.hasValue(), "连接已经被 forget，单条读却给了值");
+  QCOMPARE(gone.error().code, ErrorCode::NotFound);
+  const Result<QList<ConnectionCounters>> batch = stats.readMany(QList<ConnectionKey>{key});
+  QVERIFY(batch.hasValue());
+  QCOMPARE(batch.value().size(), 1);
+  QVERIFY(batch.value().first().since.isNull());
+
+  // 停止采集之后**又回到「不许读」**：不然就又变成「没启用却给值」。
+  stats.setCounters(key, programmed);
+  QVERIFY(stats.disableCollection(key).hasValue());
+  QCOMPARE(stats.trackedCount(), 0);
+  const Result<ConnectionCounters> afterDisable = stats.read(key);
+  QVERIFY2(!afterDisable.hasValue(), "停掉采集之后还读得出值");
+  QCOMPARE(afterDisable.error().code, ErrorCode::InvalidArgument);
 }
 
 QTEST_GUILESS_MAIN(PlatformContractTest)
