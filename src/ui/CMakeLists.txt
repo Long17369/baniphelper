@@ -1,8 +1,14 @@
 # 界面：Qt Quick 做主界面，Widgets 只用于托盘（architecture.md 第 1.3 节与第 2.1 节）。
 #
+# Sql 不是界面直接用到的模块，但必须在这里声明：本目标链了 BanIPHelper::Core，
+# 而 Core 公开依赖 Qt6::Sql（数据库是核心层的基础设施），
+# Qt 在 finalize 可执行文件时会沿依赖链去找这个目标，找不到就报
+# 「The Sql target is mentioned as a dependency for BanIPHelper::Core, but not
+# declared」——一条会影响链接完整性的警告。
+#
 # Svg 是为了能从矢量图加载托盘与窗口图标。图标必须随可执行文件走：
 # 程序是提权启动的，不会去读项目目录，图片资源只能编进二进制。
-find_package(Qt6 REQUIRED COMPONENTS Quick Widgets Svg)
+find_package(Qt6 REQUIRED COMPONENTS Quick Widgets Svg Sql)
 
 # REQUIRES 把 Qt 6.8 之前引入的策略全部设为 NEW，避免 QTP0001/QTP0004 之类
 # 的开发者警告长期堆积。

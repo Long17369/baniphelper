@@ -20,6 +20,7 @@
 #include "core/record.h"
 #include "core/result.h"
 #include "core/rule.h"
+#include "core/rule_model.h"
 #include "core/safety.h"
 #include "core/types.h"
 #include "core/version.h"
@@ -61,6 +62,8 @@ static_assert(std::is_copy_constructible_v<ConnectionKey>);
 static_assert(std::is_copy_constructible_v<ProcessRef>);
 static_assert(std::is_copy_constructible_v<MatchCondition>);
 static_assert(std::is_copy_constructible_v<Rule>);
+static_assert(std::is_copy_constructible_v<ModeSpec>);
+static_assert(std::is_copy_constructible_v<WidthIssue>);
 static_assert(std::is_copy_constructible_v<ConnectionObservation>);
 static_assert(std::is_copy_constructible_v<AllowlistEntry>);
 static_assert(std::is_copy_constructible_v<CapabilitySet>);
