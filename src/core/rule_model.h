@@ -179,6 +179,47 @@ struct ModeSpec {
                                              MatchMode mode,
                                              const QString& value);
 
+/// 一个闭区间形式的地址范围。两端必须同族，起点不得大于终点。
+///
+/// 单独成一个类型而不是「两个字符串」，是因为展开器要按它算地址族、
+/// 要与平台的地址区间匹配对上，用值类型能让「两端同族」这个约束写在类型上。
+struct AddressSpan {
+  Address lower;
+  Address upper;
+};
+
+[[nodiscard]] inline bool operator==(const AddressSpan& lhs, const AddressSpan& rhs) noexcept {
+  return lhs.lower == rhs.lower && lhs.upper == rhs.upper;
+}
+
+/// 一个闭区间形式的端口范围，含两端。两端相同表示单个端口。
+struct PortSpan {
+  std::uint16_t lower = 0;
+  std::uint16_t upper = 0;
+};
+
+[[nodiscard]] inline bool operator==(const PortSpan& lhs, const PortSpan& rhs) noexcept {
+  return lhs.lower == rhs.lower && lhs.upper == rhs.upper;
+}
+
+/// 把已规范化的地址字面量解析成值类型，顺带取回地址族。
+///
+/// 展开器要按地址族把过滤器拆开，而 `MatchCondition::values` 里只有文本，
+/// 所以需要这一步。它对没经过规范化校验的输入同样安全：会从头校一遍。
+[[nodiscard]] Result<Address> parseAddress(const QString& literal);
+
+/// 把已规范化的网段取值（`地址/前缀长度`）展开成地址区间。
+///
+/// 网段在平台上是一次匹配，不该被拆成逐地址的过滤器 —— 那会把条数炸掉，
+/// 所以展开器需要的是「网段的两个端点」而不是值本身。
+[[nodiscard]] Result<AddressSpan> subnetToSpan(const QString& subnet);
+
+/// 把已规范化的地址范围取值（`起-止`）解析成地址区间。
+[[nodiscard]] Result<AddressSpan> addressRangeToSpan(const QString& range);
+
+/// 把已规范化的端口取值（`80` 或 `80-443`）解析成端口区间。
+[[nodiscard]] Result<PortSpan> portToSpan(const QString& value);
+
 // ---------------------------------------------------------------------------
 // 校验与规范化
 // ---------------------------------------------------------------------------

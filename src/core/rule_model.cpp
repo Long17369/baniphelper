@@ -117,6 +117,35 @@ QByteArray addressBytes(const QHostAddress& address) {
   return bytes;
 }
 
+/// `addressBytes` 的逆向：把定长字节串还原成地址。
+///
+/// 网段的两个端点是用字节位运算算出来的，得再包回地址值类型才能交给上层。
+Result<Address> addressFromBytes(const QByteArray& bytes) {
+  if (bytes.size() != 4 && bytes.size() != 16) {
+    return makeError(ErrorCode::Internal,
+                     QStringLiteral("地址字节数只能是 4 或 16，给的是 %1").arg(bytes.size()));
+  }
+
+  Address address;
+  if (bytes.size() == 4) {
+    const quint32 raw = (static_cast<quint32>(static_cast<quint8>(bytes.at(0))) << 24) |
+                        (static_cast<quint32>(static_cast<quint8>(bytes.at(1))) << 16) |
+                        (static_cast<quint32>(static_cast<quint8>(bytes.at(2))) << 8) |
+                        static_cast<quint32>(static_cast<quint8>(bytes.at(3)));
+    address.family = AddressFamily::V4;
+    address.text = QHostAddress(raw).toString();
+    return address;
+  }
+
+  Q_IPV6ADDR raw{};
+  for (int i = 0; i < 16; ++i) {
+    raw.c[i] = static_cast<quint8>(bytes.at(i));
+  }
+  address.family = AddressFamily::V6;
+  address.text = QHostAddress(raw).toString();
+  return address;
+}
+
 QString addressFamilyTitle(const QHostAddress& address) {
   return address.protocol() == QAbstractSocket::IPv6Protocol ? QStringLiteral("IPv6")
                                                              : QStringLiteral("IPv4");
@@ -559,6 +588,122 @@ Result<QString> normalizeValue(MatchDomain domain, MatchMode mode, const QString
     return Result<QString>::fail(spec.error());
   }
   return normalizeValueForShape(spec.value().shape, value);
+}
+
+Result<Address> parseAddress(const QString& literal) {
+  auto parsed = parseAddressLiteral(literal);
+  if (!parsed) {
+    return Result<Address>::fail(parsed.error());
+  }
+
+  Address address;
+  address.text = parsed.value().toString();
+  address.family = parsed.value().protocol() == QAbstractSocket::IPv6Protocol ? AddressFamily::V6
+                                                                              : AddressFamily::V4;
+  return address;
+}
+
+Result<AddressSpan> subnetToSpan(const QString& subnet) {
+  const int slash = subnet.indexOf(QLatin1Char('/'));
+  if (slash < 0) {
+    return makeError(ErrorCode::InvalidArgument,
+                     QStringLiteral("网段要写成「地址/前缀长度」：%1").arg(subnet));
+  }
+
+  auto parsed = parseAddressLiteral(subnet.left(slash));
+  if (!parsed) {
+    return Result<AddressSpan>::fail(parsed.error());
+  }
+
+  const bool isV6 = parsed.value().protocol() == QAbstractSocket::IPv6Protocol;
+  const int totalBits = isV6 ? 128 : 32;
+
+  bool ok = false;
+  const int prefix = subnet.mid(slash + 1).toInt(&ok);
+  if (!ok || prefix < 0 || prefix > totalBits) {
+    return makeError(ErrorCode::InvalidArgument,
+                     QStringLiteral("网段的前缀长度不合法：%1").arg(subnet));
+  }
+
+  // 主机位全部置 0 得到起点，全部置 1 得到终点。
+  // 地址是大端存储，所以第 bit 位落在第 bit/8 字节的第 7-(bit%8) 位。
+  QByteArray lower = addressBytes(parsed.value());
+  QByteArray upper = lower;
+  for (int bit = prefix; bit < totalBits; ++bit) {
+    const int byteIndex = bit / 8;
+    const int bitIndex = 7 - (bit % 8);
+    const char mask = static_cast<char>(1U << bitIndex);
+    lower[byteIndex] = static_cast<char>(lower.at(byteIndex) & ~mask);
+    upper[byteIndex] = static_cast<char>(upper.at(byteIndex) | mask);
+  }
+
+  auto lowerAddress = addressFromBytes(lower);
+  if (!lowerAddress) {
+    return Result<AddressSpan>::fail(lowerAddress.error());
+  }
+  auto upperAddress = addressFromBytes(upper);
+  if (!upperAddress) {
+    return Result<AddressSpan>::fail(upperAddress.error());
+  }
+
+  AddressSpan span;
+  span.lower = lowerAddress.value();
+  span.upper = upperAddress.value();
+  return span;
+}
+
+Result<AddressSpan> addressRangeToSpan(const QString& range) {
+  const int dash = range.indexOf(QLatin1Char('-'));
+  if (dash < 0) {
+    return makeError(ErrorCode::InvalidArgument,
+                     QStringLiteral("地址范围要写成「起-止」：%1").arg(range));
+  }
+
+  auto lower = parseAddress(range.left(dash));
+  if (!lower) {
+    return Result<AddressSpan>::fail(lower.error());
+  }
+  auto upper = parseAddress(range.mid(dash + 1));
+  if (!upper) {
+    return Result<AddressSpan>::fail(upper.error());
+  }
+  if (lower.value().family != upper.value().family) {
+    return makeError(ErrorCode::InvalidArgument,
+                     QStringLiteral("地址范围的两端必须是同一地址族：%1").arg(range));
+  }
+
+  AddressSpan span;
+  span.lower = lower.value();
+  span.upper = upper.value();
+  return span;
+}
+
+Result<PortSpan> portToSpan(const QString& value) {
+  const int dash = value.indexOf(QLatin1Char('-'));
+  if (dash < 0) {
+    auto port = parsePortNumber(value);
+    if (!port) {
+      return Result<PortSpan>::fail(port.error());
+    }
+    PortSpan span;
+    span.lower = static_cast<std::uint16_t>(port.value());
+    span.upper = span.lower;
+    return span;
+  }
+
+  auto lower = parsePortNumber(value.left(dash));
+  if (!lower) {
+    return Result<PortSpan>::fail(lower.error());
+  }
+  auto upper = parsePortNumber(value.mid(dash + 1));
+  if (!upper) {
+    return Result<PortSpan>::fail(upper.error());
+  }
+
+  PortSpan span;
+  span.lower = static_cast<std::uint16_t>(lower.value());
+  span.upper = static_cast<std::uint16_t>(upper.value());
+  return span;
 }
 
 // ---------------------------------------------------------------------------

@@ -45,6 +45,14 @@ baniphelper_add_test(rule_model baniphelper_rule_model_test
   rule_model_test.cpp
 )
 
+# 展开器的拆法是纯逻辑（不包含任何平台专有头），但它按约定放在 platform/win/ 下
+# —— 拆法允许与平台的过滤机制贴紧。因此这个测试要链真实后端才能拿到实现。
+# 若将来出现第二个平台的拆法与 Windows 相同，把这几个文件上移到 core/ 即可。
+baniphelper_add_test(filter_plan baniphelper_filter_plan_test
+  filter_plan_test.cpp
+)
+target_link_libraries(baniphelper_filter_plan_test PRIVATE BanIPHelper::Backend)
+
 # 契约测试要把同一套断言跑在真实后端与内存后端上，因此两边都要链。
 baniphelper_add_test(platform_contract baniphelper_platform_contract_test
   platform_contract_test.cpp
