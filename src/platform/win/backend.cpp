@@ -16,18 +16,22 @@ Result<PlatformBackend> createPlatformBackend(const QString& singleInstanceName)
 
   // 只声明已经真正实现的能力。还没做的一律不写进来，界面据此显式禁用。
   // 声明了却做不到，比不声明更糟：用户会以为功能可用，点下去才发现不行。
+  //
+  // `FilterIPv4` / `FilterIPv6` 在 S2.4 落地：规则能翻成过滤器并用事务提交、
+  // 能按规则撤销、重复下发幂等，都已实测（tmp/drill-s2.4.cpp）。
+  // 这两个能力位说的是**下发**，至于「封得住」由阶段二的 S2.5 与 S2.6 分别验收。
+  //
+  // `OrphanCleanup` 其实 S1.7 就实现了（启动时清掉上次运行残留的自家过滤器，
+  // 三种终止方式都演练过），一直漏在声明之外 —— 漏声明的后果是界面上
+  // 那一栏显示成「做不到」，而它明明做得到。
   CapabilitySet declared;
+  declared.add(Capability::FilterIPv4);
+  declared.add(Capability::FilterIPv6);
+  declared.add(Capability::OrphanCleanup);
   declared.add(Capability::Elevation);
   declared.add(Capability::SingleInstance);
 
   auto capabilities = std::make_unique<DeclaredCapabilities>(backend.name, declared);
-
-  // 尚未实现的能力给出具体原因，而不是只退回到通用的后果说明：
-  // 「阶段二 S2.4」比「无法阻断通信」更能告诉使用者现在处在哪一步。
-  capabilities->setUnsupportedReason(Capability::FilterIPv4,
-                                     QStringLiteral("过滤器引擎的下发能力尚未实现，阶段二 S2.4"));
-  capabilities->setUnsupportedReason(Capability::FilterIPv6,
-                                     QStringLiteral("过滤器引擎的下发能力尚未实现，阶段二 S2.4"));
 
   backend.capabilities = std::move(capabilities);
   backend.privilege = std::make_unique<WinPrivilege>();

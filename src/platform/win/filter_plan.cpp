@@ -381,4 +381,163 @@ Result<FilterPlan> expandRule(const RuleSpec& rule) {
   return plan;
 }
 
+// ---------------------------------------------------------------------------
+// 取反的解析（S2.4 下发前的一步）
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// 该字段上的全部条件，保持它们在条目里的原顺序。
+QList<FilterCondition> conditionsOfField(const QList<FilterCondition>& conditions,
+                                         FilterField field) {
+  QList<FilterCondition> ofField;
+  for (const FilterCondition& condition : conditions) {
+    if (condition.field == field) {
+      ofField.append(condition);
+    }
+  }
+  return ofField;
+}
+
+/// 「取反之后一个取值都不剩」的统一说法。
+///
+/// 这种规则**永远不可能命中**，而且症状极具迷惑性：它在界面上看起来是「封了一整片」。
+/// 所以必须报错，不能让它以「没有条件」的形式下发 —— 那会反过来变成完全不限定，
+/// 与用户的意图正好相反。
+Error emptyComplementError(FilterField field) {
+  return makeError(ErrorCode::InvalidArgument,
+                   QStringLiteral("「%1」域取反之后没有任何取值剩下，这条规则永远不可能命中。"
+                                  "要表达「全部」请直接写一个全匹配条件，不要取反")
+                       .arg(QString::fromLatin1(filterFieldName(field))));
+}
+
+}  // namespace
+
+Result<FilterPlanEntry> resolveNegation(const FilterPlanEntry& entry) {
+  FilterPlanEntry resolved;
+  resolved.stage = entry.stage;
+  resolved.action = entry.action;
+  resolved.family = entry.family;
+  resolved.priority = entry.priority;
+
+  // 遍历顺序固定为程序、地址、端口、协议，与展开器的产出顺序一致。
+  // 顺序固定，输出的条件排列才是确定的，日志与测试都不必自己排序。
+  constexpr FilterField kFieldOrder[] = {
+      FilterField::AppPath, FilterField::RemoteAddress, FilterField::Port, FilterField::Protocol};
+
+  for (const FilterField field : kFieldOrder) {
+    const QList<FilterCondition> ofField = conditionsOfField(entry.conditions, field);
+    if (ofField.isEmpty()) {
+      continue;
+    }
+
+    const bool negated = ofField.first().negate;
+    for (const FilterCondition& condition : ofField) {
+      if (condition.negate != negated) {
+        // 同字段的条件来自同一个域条件，取反标记必然一致。不一致说明展开器改了行为，
+        // 而这里猜错方向的代价是把一整片地址封错。
+        return Result<FilterPlanEntry>::fail(
+            makeError(ErrorCode::Internal,
+                      QStringLiteral("「%1」字段上混了取反与不取反的条件，不该出现这种形状")
+                          .arg(QString::fromLatin1(filterFieldName(field)))));
+      }
+    }
+
+    // 不取反就照抄：同字段多条件本来就是「或」，平台层不必再加工。
+    if (!negated) {
+      resolved.conditions.append(ofField);
+      continue;
+    }
+
+    // 剩下的是取反。**除程序域之外一律求补**，换成补集里的正向取值。
+    //
+    // 为什么不给单值取反留一条「用平台的『不等于』匹配」的捷径：那要依赖
+    // `FWP_MATCH_NOT_EQUAL` 在 ALE 各层上都能用，而这一点没有验证过，
+    // 猜错的后果是条件被判为不兼容、整条规则下发失败。求补是纯取值运算，
+    // 正确性在核心层就能测，不欠平台任何东西。少一条捷径，少一类未验证的假设。
+    switch (field) {
+      case FilterField::RemoteAddress: {
+        QList<AddressSpan> spans;
+        for (const FilterCondition& condition : ofField) {
+          spans.append(condition.address);
+        }
+        auto complement = complementAddressSpans(spans);
+        if (!complement) {
+          return Result<FilterPlanEntry>::fail(complement.error());
+        }
+        if (complement.value().isEmpty()) {
+          return Result<FilterPlanEntry>::fail(emptyComplementError(field));
+        }
+        for (const AddressSpan& span : complement.value()) {
+          FilterCondition condition;
+          condition.field = FilterField::RemoteAddress;
+          condition.address = span;
+          resolved.conditions.append(condition);
+        }
+        break;
+      }
+
+      case FilterField::Port: {
+        QList<PortSpan> spans;
+        for (const FilterCondition& condition : ofField) {
+          PortSpan span;
+          span.lower = condition.portLower;
+          span.upper = condition.portUpper;
+          spans.append(span);
+        }
+        const QList<PortSpan> complement = complementPortSpans(spans);
+        if (complement.isEmpty()) {
+          return Result<FilterPlanEntry>::fail(emptyComplementError(field));
+        }
+        for (const PortSpan& span : complement) {
+          FilterCondition condition;
+          condition.field = FilterField::Port;
+          condition.portLower = span.lower;
+          condition.portUpper = span.upper;
+          resolved.conditions.append(condition);
+        }
+        break;
+      }
+
+      case FilterField::Protocol: {
+        // 协议域一个条件只带一个取值（`proto/tcp` 或 `proto/udp`），所以补集是另一个协议。
+        bool hasTcp = false;
+        bool hasUdp = false;
+        for (const FilterCondition& condition : ofField) {
+          if (condition.protocol == TransportProtocol::Tcp) {
+            hasTcp = true;
+          } else {
+            hasUdp = true;
+          }
+        }
+        if (hasTcp && hasUdp) {
+          return Result<FilterPlanEntry>::fail(emptyComplementError(field));
+        }
+
+        FilterCondition condition;
+        condition.field = FilterField::Protocol;
+        condition.protocol = hasTcp ? TransportProtocol::Udp : TransportProtocol::Tcp;
+        resolved.conditions.append(condition);
+        break;
+      }
+
+      case FilterField::AppPath:
+        if (ofField.size() == 1) {
+          // 程序域是**唯一求不出补集**的字段：补集是「系统里除这个之外的全部程序」，
+          // 是个开放集合。单值还能靠平台的不等匹配表达，多值不行 ——
+          // 多值是「或」，而「≠A 或 ≠B」恒真，会把程序条件整个丢掉。
+          resolved.conditions.append(ofField);
+          break;
+        }
+        return Result<FilterPlanEntry>::fail(unsupportedError(
+            QStringLiteral("程序域的多值取反"),
+            QStringLiteral("程序全体是开放集合，「不是这几个程序」算不出确定的补集。"
+                           "这一条给了 %1 个路径，请拆成每条只取反一个路径的规则")
+                .arg(ofField.size())));
+    }
+  }
+
+  return resolved;
+}
+
 }  // namespace baniphelper::core

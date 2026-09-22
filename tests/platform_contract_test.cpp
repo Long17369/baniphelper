@@ -125,11 +125,18 @@ void PlatformContractTest::capabilityDeclarationMatchesImplementation() {
     QVERIFY2(backend.capabilities->isSupported(Capability::Elevation),
              qPrintable(backends.label + " 后端实现了 IPrivilege，却没声明 Elevation 能力"));
 
-    // 过滤器引擎存在，但下发能力还没实现，因此 FilterIPv4 必须**不**被声明。
-    // 这一条与 filterEngineRefusesWhatItCannotDo 是一对：
-    // 一个管声明，一个管行为，两边必须同时成立。
-    QVERIFY2(!backend.capabilities->isSupported(Capability::FilterIPv4),
-             qPrintable(backends.label + " 后端声明了 IPv4 过滤能力，但下发还没实现"));
+    // 过滤器引擎的下发能力：声明必须与实现的进度一致，而**两个后端的进度不同**，
+    // 所以这里给的是各自的期望值，不是一句对所有后端都成立的话 ——
+    // 后者在能力落地时只能删掉重写，删掉之后就没人守着这件事了。
+    //
+    // - 真实后端：S2.4 起能下发与撤销规则（tmp/drill-s2.4.cpp 实测）；
+    //   残留清理 S1.7 起就有，只是一直漏在声明之外，那同样是不一致。
+    // - 内存后端：不追求完整的对照物，只保证界面能在没有管理员权限时跑起来。
+    const bool real = backends.label == QStringLiteral("real");
+    QVERIFY2(backend.capabilities->isSupported(Capability::FilterIPv4) == real,
+             qPrintable(backends.label + " 后端的 FilterIPv4 声明与实现进度不一致"));
+    QVERIFY2(backend.capabilities->isSupported(Capability::OrphanCleanup) == real,
+             qPrintable(backends.label + " 后端的 OrphanCleanup 声明与实现进度不一致"));
   });
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -224,6 +225,29 @@ struct PortSpan {
 
 /// 把已规范化的端口取值（`80` 或 `80-443`）解析成端口区间。
 [[nodiscard]] Result<PortSpan> portToSpan(const QString& value);
+
+/// 地址的定长字节表示：IPv4 是 4 字节、IPv6 是 16 字节，一律网络序（大端）。
+///
+/// 平台层要拿它去构造过滤条件（WFP 的 IPv4 条件收 32 位整数、IPv6 收 16 字节数组），
+/// 求补也要靠它做数值比较。放在核心层是为了让「地址怎么变成二进制」只有一处实现
+/// —— 平台层自己再解析一遍，就多出一份可能与核心层不一致的规则，
+/// 而两份规则不一致的表现是**同一份规则在不同地方封不同的范围**。
+[[nodiscard]] Result<QByteArray> addressToBytes(const Address& address);
+
+/// 求一组地址区间在其地址族全域内的补集（阶段二 S2.4）。
+///
+/// 用途只有一个，但是关键的一个：`addr ∉ {A, B}` 这种多值取反**不能**翻成
+/// 「≠A 或 ≠B」—— 那个条件恒为真，等于把地址条件整个丢掉，规则会比预期
+/// **封得宽**（见 `filter_plan.h` 顶部的说明）。必须先求出集合的补集，
+/// 再用补集里的正向区间各出一个条件。
+///
+/// 入参必须同族、每段起点不大于终点；结果按起点升序，两两不重叠也不相邻。
+/// **入参为空返回空**：「不限定」的补集是空集，而不是全集 ——
+/// 空集与全集是相反的语义，调用方必须自己区分，这里不替调用方猜。
+[[nodiscard]] Result<QList<AddressSpan>> complementAddressSpans(const QList<AddressSpan>& spans);
+
+/// 求一组端口区间在 0–65535 内的补集。约束与语义同 `complementAddressSpans`。
+[[nodiscard]] QList<PortSpan> complementPortSpans(const QList<PortSpan>& spans);
 
 // ---------------------------------------------------------------------------
 // 校验与规范化

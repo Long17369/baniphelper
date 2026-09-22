@@ -13,8 +13,12 @@
 #include <QDir>
 #include <QHostAddress>
 #include <QList>
+#include <QPair>
 #include <QString>
 #include <QStringList>
+
+#include <algorithm>
+#include <utility>
 
 #include "core/error.h"
 
@@ -700,6 +704,263 @@ Result<PortSpan> portToSpan(const QString& value) {
   span.lower = static_cast<std::uint16_t>(lower.value());
   span.upper = static_cast<std::uint16_t>(upper.value());
   return span;
+}
+
+// ---------------------------------------------------------------------------
+// 地址与端口的取值运算（S2.4 的取反求补要用）
+// ---------------------------------------------------------------------------
+//
+// 「求补」是取反条件唯一正确的翻法：多值取反若翻成「≠A 或 ≠B」就恒为真，
+// 等于把条件整个丢掉，规则会比预期**封得宽**（见 filter_plan.h）。
+// 这段运算放在核心层而不是平台层，是因为它纯粹是取值集合的事，
+// 与用哪套过滤 API 无关；放在核心层还能直接单元测试。
+
+namespace {
+
+/// 大端字节串加一。已经是全 0xFF 时返回 false，且**不改动入参**。
+///
+/// 先整体扫一遍再进位，就是为了「失败时入参不变」这一条：
+/// 失败后调用方手里的游标必须还是原来那个值，否则它会拿着一个被清零的游标继续算。
+bool incrementBytes(QByteArray& bytes) {
+  bool allOnes = true;
+  for (const char byte : bytes) {
+    if (static_cast<std::uint8_t>(byte) != 0xFFU) {
+      allOnes = false;
+      break;
+    }
+  }
+  if (allOnes) {
+    return false;
+  }
+
+  for (int i = bytes.size() - 1; i >= 0; --i) {
+    const auto value = static_cast<std::uint8_t>(bytes.at(i));
+    if (value != 0xFFU) {
+      bytes[i] = static_cast<char>(value + 1);
+      return true;
+    }
+    bytes[i] = '\0';
+  }
+  return false;
+}
+
+/// 大端字节串减一。已经是全 0x00 时返回 false，且**不改动入参**。理由同上。
+bool decrementBytes(QByteArray& bytes) {
+  bool allZero = true;
+  for (const char byte : bytes) {
+    if (byte != '\0') {
+      allZero = false;
+      break;
+    }
+  }
+  if (allZero) {
+    return false;
+  }
+
+  for (int i = bytes.size() - 1; i >= 0; --i) {
+    const auto value = static_cast<std::uint8_t>(bytes.at(i));
+    if (value != 0U) {
+      bytes[i] = static_cast<char>(value - 1);
+      return true;
+    }
+    bytes[i] = static_cast<char>(0xFFU);
+  }
+  return false;
+}
+
+/// 把一对大端字节串包回地址区间并追加。字节长度必须是 4 或 16，由 `addressFromBytes` 兜底。
+Result<void> appendAddressSpan(QList<AddressSpan>& spans,
+                               const QByteArray& lower,
+                               const QByteArray& upper) {
+  auto low = addressFromBytes(lower);
+  if (!low) {
+    return Result<void>::fail(low.error());
+  }
+  auto high = addressFromBytes(upper);
+  if (!high) {
+    return Result<void>::fail(high.error());
+  }
+
+  AddressSpan span;
+  span.lower = low.value();
+  span.upper = high.value();
+  spans.append(span);
+  return Result<void>::ok();
+}
+
+}  // namespace
+
+Result<QByteArray> addressToBytes(const Address& address) {
+  auto parsed = parseAddressLiteral(address.text);
+  if (!parsed) {
+    return Result<QByteArray>::fail(parsed.error());
+  }
+
+  // 值与声明的地址族必须对得上。对不上的后果是「按 IPv4 构造的条件里放了 IPv6 的数值」，
+  // 平台层会把它当成某个毫不相干的 IPv4 地址，而且是静默的。
+  const bool isV6 = parsed.value().protocol() == QAbstractSocket::IPv6Protocol;
+  if (isV6 != (address.family == AddressFamily::V6)) {
+    return makeError(ErrorCode::InvalidArgument,
+                     QStringLiteral("地址 %1 与它声明的地址族对不上").arg(address.text));
+  }
+
+  return addressBytes(parsed.value());
+}
+
+Result<QList<AddressSpan>> complementAddressSpans(const QList<AddressSpan>& spans) {
+  QList<AddressSpan> result;
+  if (spans.isEmpty()) {
+    // 「不限定」的补集是空集。空集与全集是相反的语义，不能替调用方猜。
+    return result;
+  }
+
+  const AddressFamily family = spans.first().lower.family;
+  const int byteCount = family == AddressFamily::V6 ? 16 : 4;
+
+  // 先全部转成字节串并逐条校验，再排序合并。「先校验后计算」是为了让
+  // 失败路径不留下一个算了一半的结果 —— 半份补集会静默封错范围。
+  QList<QPair<QByteArray, QByteArray>> ranges;
+  for (const AddressSpan& span : spans) {
+    if (span.lower.family != span.upper.family || span.lower.family != family) {
+      return makeError(ErrorCode::InvalidArgument,
+                       QStringLiteral("求补的地址区间必须同族，且两端一致：%1-%2")
+                           .arg(span.lower.text, span.upper.text));
+    }
+
+    auto lower = addressToBytes(span.lower);
+    if (!lower) {
+      return Result<QList<AddressSpan>>::fail(lower.error());
+    }
+    auto upper = addressToBytes(span.upper);
+    if (!upper) {
+      return Result<QList<AddressSpan>>::fail(upper.error());
+    }
+    if (upper.value() < lower.value()) {
+      return makeError(ErrorCode::InvalidArgument,
+                       QStringLiteral("地址区间的起点不能大于终点：%1-%2")
+                           .arg(span.lower.text, span.upper.text));
+    }
+
+    ranges.append({lower.value(), upper.value()});
+  }
+
+  std::sort(ranges.begin(),
+            ranges.end(),
+            [](const QPair<QByteArray, QByteArray>& lhs, const QPair<QByteArray, QByteArray>& rhs) {
+              return lhs.first < rhs.first;
+            });
+
+  QList<QPair<QByteArray, QByteArray>> merged;
+  for (const QPair<QByteArray, QByteArray>& range : ranges) {
+    bool absorbed = false;
+    if (!merged.isEmpty()) {
+      QByteArray nextAfterLast = merged.last().second;
+      if (!incrementBytes(nextAfterLast)) {
+        // 上一段的终点已是全域最大值，后面的区间一定被它包含。
+        absorbed = true;
+      } else {
+        absorbed = !(nextAfterLast < range.first);
+      }
+      if (absorbed && merged.last().second < range.second) {
+        merged.last().second = range.second;
+      }
+    }
+    if (!absorbed) {
+      merged.append(range);
+    }
+  }
+
+  const QByteArray zero(byteCount, '\0');
+  QByteArray cursor = zero;
+  bool haveCursor = true;
+
+  for (const QPair<QByteArray, QByteArray>& range : merged) {
+    if (!haveCursor) {
+      break;
+    }
+    if (cursor < range.first) {
+      QByteArray gapEnd = range.first;
+      decrementBytes(gapEnd);
+      auto appended = appendAddressSpan(result, cursor, gapEnd);
+      if (!appended) {
+        return Result<QList<AddressSpan>>::fail(appended.error());
+      }
+    }
+    cursor = range.second;
+    haveCursor = incrementBytes(cursor);
+  }
+
+  if (haveCursor) {
+    const QByteArray allOnes(byteCount, static_cast<char>(0xFFU));
+    auto appended = appendAddressSpan(result, cursor, allOnes);
+    if (!appended) {
+      return Result<QList<AddressSpan>>::fail(appended.error());
+    }
+  }
+
+  return result;
+}
+
+QList<PortSpan> complementPortSpans(const QList<PortSpan>& spans) {
+  QList<PortSpan> result;
+  if (spans.isEmpty()) {
+    return result;
+  }
+
+  QList<QPair<std::uint32_t, std::uint32_t>> ranges;
+  for (const PortSpan& span : spans) {
+    std::uint32_t lower = span.lower;
+    std::uint32_t upper = span.upper;
+    if (upper < lower) {
+      std::swap(lower, upper);
+    }
+    ranges.append({lower, upper});
+  }
+  std::sort(ranges.begin(),
+            ranges.end(),
+            [](const QPair<std::uint32_t, std::uint32_t>& lhs,
+               const QPair<std::uint32_t, std::uint32_t>& rhs) { return lhs.first < rhs.first; });
+
+  QList<QPair<std::uint32_t, std::uint32_t>> merged;
+  for (const QPair<std::uint32_t, std::uint32_t>& range : ranges) {
+    if (!merged.isEmpty() && range.first <= merged.last().second + 1U) {
+      if (range.second > merged.last().second) {
+        merged.last().second = range.second;
+      }
+      continue;
+    }
+    merged.append(range);
+  }
+
+  constexpr std::uint32_t kMaxPort = 65535U;
+  std::uint32_t cursor = 0;
+  bool haveCursor = true;
+
+  for (const QPair<std::uint32_t, std::uint32_t>& range : merged) {
+    if (!haveCursor) {
+      break;
+    }
+    if (cursor < range.first) {
+      PortSpan gap;
+      gap.lower = static_cast<std::uint16_t>(cursor);
+      gap.upper = static_cast<std::uint16_t>(range.first - 1U);
+      result.append(gap);
+    }
+    if (range.second >= kMaxPort) {
+      haveCursor = false;
+    } else {
+      cursor = range.second + 1U;
+    }
+  }
+
+  if (haveCursor) {
+    PortSpan tail;
+    tail.lower = static_cast<std::uint16_t>(cursor);
+    tail.upper = static_cast<std::uint16_t>(kMaxPort);
+    result.append(tail);
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ target_link_libraries(baniphelper_backend_impl PUBLIC
 
 # shell32：提权重启用 ShellExecuteExW。
 # fwpuclnt：WFP 用户态 API（FwpmEngineOpen0 等）。
-target_link_libraries(baniphelper_backend_impl PRIVATE shell32 fwpuclnt)
+# ole32：CoCreateGuid，给每条下发的过滤器取一个唯一标识。
+target_link_libraries(baniphelper_backend_impl PRIVATE shell32 fwpuclnt ole32)
 
 baniphelper_enable_warnings(baniphelper_backend_impl)

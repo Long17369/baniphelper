@@ -51,6 +51,11 @@ QString errorText(const Result<FilterPlan>& result) {
   return result.hasValue() ? QString() : result.error().message;
 }
 
+/// 同上，给取反解析用。
+QString errorText(const Result<FilterPlanEntry>& result) {
+  return result.hasValue() ? QString() : result.error().message;
+}
+
 /// 取条目里某个字段的条件，没有就返回 nullptr。
 const FilterCondition* conditionOf(const FilterPlanEntry& entry, FilterField field) {
   for (const FilterCondition& condition : entry.conditions) {
@@ -103,6 +108,10 @@ class FilterPlanTest : public QObject {
   void invalidConditionsAreRejected();
   void oversizedPlanIsRejected();
   void expansionIsDeterministic();
+
+  void negationIsResolvedIntoComplements();
+  void appIdNegationStaysForThePlatform();
+  void unrepresentableNegationsAreRejected();
 };
 
 void FilterPlanTest::nameTablesCoverEveryValue() {
@@ -482,6 +491,165 @@ void FilterPlanTest::expansionIsDeterministic() {
       QVERIFY(left.conditions.at(condition).field == right.conditions.at(condition).field);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// 取反的解析（S2.4）
+// ---------------------------------------------------------------------------
+//
+// 这一组断言盯的是**最坏方向**：取反写错时，规则会比预期封得**宽**
+// （`≠A 或 ≠B` 恒真，等于把条件整个丢掉），而验证「封得宽」比验证
+// 「封得准」难得多 —— 用户只会发现「有些该通的连不上」，很难定位到是取反。
+
+void FilterPlanTest::negationIsResolvedIntoComplements() {
+  // 地址取反：一个地址补成两段，且**不再带取反标记**。
+  const auto plan =
+      expandRule(makeSpec({makeCondition(QStringLiteral("addr"),
+                                         QStringLiteral("exact"),
+                                         QStringList{QStringLiteral("1.2.3.4")},
+                                         true),
+                           makeCondition(QStringLiteral("direction"), QStringLiteral("out"))}));
+  QVERIFY2(plan.hasValue(), qPrintable(errorText(plan)));
+  QCOMPARE(plan.value().entries.size(), 1);
+
+  const auto resolved = resolveNegation(plan.value().entries.at(0));
+  QVERIFY2(resolved.hasValue(), qPrintable(errorText(resolved)));
+
+  QCOMPARE(resolved.value().conditions.size(), 2);
+  QVERIFY(!resolved.value().conditions.at(0).negate);
+  QVERIFY(!resolved.value().conditions.at(1).negate);
+  QCOMPARE(resolved.value().conditions.at(0).field, FilterField::RemoteAddress);
+  QCOMPARE(resolved.value().conditions.at(0).address.lower.text, QStringLiteral("0.0.0.0"));
+  QCOMPARE(resolved.value().conditions.at(0).address.upper.text, QStringLiteral("1.2.3.3"));
+  QCOMPARE(resolved.value().conditions.at(1).address.lower.text, QStringLiteral("1.2.3.5"));
+  QCOMPARE(resolved.value().conditions.at(1).address.upper.text, QStringLiteral("255.255.255.255"));
+
+  // 多值取反：展开期是**两个条件**，这正是它必须求补的原因（两个取反条件是「或」，
+  // 而「≠1.2.3.0 或 ≠5.6.7.0」恒为真）。求补之后是三段正向区间。
+  //
+  // 地址域没有 `set` 方式（只有 exact / range / cidr / any），多值要靠 cidr 或
+  // range 的取值列表来表达，所以这里用两个 /32。
+  const auto multi = expandRule(makeSpec(
+      {makeCondition(QStringLiteral("addr"),
+                     QStringLiteral("cidr"),
+                     QStringList{QStringLiteral("1.2.3.0/32"), QStringLiteral("5.6.7.0/32")},
+                     true),
+       makeCondition(QStringLiteral("direction"), QStringLiteral("out"))}));
+  QVERIFY2(multi.hasValue(), qPrintable(errorText(multi)));
+  QCOMPARE(multi.value().entries.at(0).conditions.size(), 2);
+  QVERIFY(multi.value().entries.at(0).conditions.at(0).negate);
+  QVERIFY(multi.value().entries.at(0).conditions.at(1).negate);
+
+  const auto resolvedMulti = resolveNegation(multi.value().entries.at(0));
+  QVERIFY2(resolvedMulti.hasValue(), qPrintable(errorText(resolvedMulti)));
+  QCOMPARE(resolvedMulti.value().conditions.size(), 3);
+  for (const FilterCondition& condition : resolvedMulti.value().conditions) {
+    QVERIFY(!condition.negate);
+  }
+  QCOMPARE(resolvedMulti.value().conditions.at(1).address.lower.text, QStringLiteral("1.2.3.1"));
+  QCOMPARE(resolvedMulti.value().conditions.at(1).address.upper.text, QStringLiteral("5.6.6.255"));
+  QCOMPARE(resolvedMulti.value().conditions.at(2).address.lower.text, QStringLiteral("5.6.7.1"));
+
+  // 端口取反同理：80 变成 0-79 与 81-65535，原有的协议条件原样留着。
+  const auto ports =
+      expandRule(makeSpec({makeCondition(QStringLiteral("port"),
+                                         QStringLiteral("exact"),
+                                         QStringList{QStringLiteral("80")},
+                                         true),
+                           makeCondition(QStringLiteral("direction"), QStringLiteral("out")),
+                           makeCondition(QStringLiteral("proto"), QStringLiteral("tcp"))}));
+  QVERIFY2(ports.hasValue(), qPrintable(errorText(ports)));
+  const auto resolvedPorts = resolveNegation(ports.value().entries.at(0));
+  QVERIFY2(resolvedPorts.hasValue(), qPrintable(errorText(resolvedPorts)));
+  QCOMPARE(resolvedPorts.value().conditions.size(), 3);
+  QCOMPARE(static_cast<int>(resolvedPorts.value().conditions.at(0).portLower), 0);
+  QCOMPARE(static_cast<int>(resolvedPorts.value().conditions.at(0).portUpper), 79);
+  QCOMPARE(static_cast<int>(resolvedPorts.value().conditions.at(1).portLower), 81);
+  QCOMPARE(static_cast<int>(resolvedPorts.value().conditions.at(1).portUpper), 65535);
+  QCOMPARE(resolvedPorts.value().conditions.at(2).field, FilterField::Protocol);
+  QVERIFY(!resolvedPorts.value().conditions.at(2).negate);
+
+  // 不取反的条目要**逐字透传**：这一步不该顺手改动任何东西。
+  const auto plain =
+      expandRule(makeSpec({makeCondition(QStringLiteral("addr"),
+                                         QStringLiteral("cidr"),
+                                         QStringList{QStringLiteral("1.2.3.0/24")}),
+                           makeCondition(QStringLiteral("direction"), QStringLiteral("out"))}));
+  QVERIFY2(plain.hasValue(), qPrintable(errorText(plain)));
+  const FilterPlanEntry& entry = plain.value().entries.at(0);
+  const auto resolvedPlain = resolveNegation(entry);
+  QVERIFY2(resolvedPlain.hasValue(), qPrintable(errorText(resolvedPlain)));
+  QCOMPARE(resolvedPlain.value().conditions.size(), entry.conditions.size());
+  QCOMPARE(resolvedPlain.value().conditions.at(0).address.lower.text,
+           entry.conditions.at(0).address.lower.text);
+  QCOMPARE(resolvedPlain.value().conditions.at(0).address.upper.text,
+           entry.conditions.at(0).address.upper.text);
+  QCOMPARE(resolvedPlain.value().stage, entry.stage);
+  QCOMPARE(resolvedPlain.value().family, entry.family);
+  QCOMPARE(resolvedPlain.value().priority, entry.priority);
+}
+
+void FilterPlanTest::appIdNegationStaysForThePlatform() {
+  // 程序域是唯一求不出补集的字段：补集是「系统里除它之外的全部程序」，是个开放集合。
+  // 单值还能靠平台的不等匹配表达，所以标记原样留着，由平台层翻成「不等于」。
+  const auto plan =
+      expandRule(makeSpec({makeCondition(QStringLiteral("proc"),
+                                         QStringLiteral("exact"),
+                                         QStringList{QStringLiteral("C:\\a.exe")},
+                                         true),
+                           makeCondition(QStringLiteral("direction"), QStringLiteral("out"))}));
+  QVERIFY2(plan.hasValue(), qPrintable(errorText(plan)));
+
+  const auto resolved = resolveNegation(plan.value().entries.at(0));
+  QVERIFY2(resolved.hasValue(), qPrintable(errorText(resolved)));
+  QCOMPARE(resolved.value().conditions.size(), 1);
+  QVERIFY(resolved.value().conditions.at(0).negate);
+  QCOMPARE(resolved.value().conditions.at(0).field, FilterField::AppPath);
+  // 路径原样穿过：用户写反斜杠，清单里就是反斜杠。
+  QCOMPARE(resolved.value().conditions.at(0).appPath, QStringLiteral("C:\\a.exe"));
+}
+
+void FilterPlanTest::unrepresentableNegationsAreRejected() {
+  // 程序域多值取反：算不出补集，多条又只能是「或」，翻成「不等于 A 或 不等于 B」
+  // 恒为真，程序条件会被整个丢掉 —— 封禁范围比预期大得多。宁可拒绝。
+  const auto manyApps = expandRule(
+      makeSpec({makeCondition(QStringLiteral("proc"),
+                              QStringLiteral("set"),
+                              QStringList{QStringLiteral("C:\\a.exe"), QStringLiteral("C:\\b.exe")},
+                              true),
+                makeCondition(QStringLiteral("direction"), QStringLiteral("out"))}));
+  QVERIFY2(manyApps.hasValue(), qPrintable(errorText(manyApps)));
+  const auto resolvedMany = resolveNegation(manyApps.value().entries.at(0));
+  QVERIFY(!resolvedMany.hasValue());
+  QCOMPARE(resolvedMany.error().code, ErrorCode::NotSupported);
+  QVERIFY(resolvedMany.error().message.contains(QStringLiteral("程序")));
+
+  // 覆盖全域的地址取反：补集是空集，也就是**永远不命中**。
+  // 放它过去会被翻成「不限定地址」，与用户的意图正好相反。
+  const auto everything =
+      expandRule(makeSpec({makeCondition(QStringLiteral("addr"),
+                                         QStringLiteral("cidr"),
+                                         QStringList{QStringLiteral("0.0.0.0/0")},
+                                         true),
+                           makeCondition(QStringLiteral("direction"), QStringLiteral("out"))}));
+  QVERIFY2(everything.hasValue(), qPrintable(errorText(everything)));
+  const auto resolvedEverything = resolveNegation(everything.value().entries.at(0));
+  QVERIFY(!resolvedEverything.hasValue());
+  QCOMPARE(resolvedEverything.error().code, ErrorCode::InvalidArgument);
+  QVERIFY(resolvedEverything.error().message.contains(QStringLiteral("永远")));
+
+  // 端口全域取反：同上。
+  const auto allPorts =
+      expandRule(makeSpec({makeCondition(QStringLiteral("port"),
+                                         QStringLiteral("range"),
+                                         QStringList{QStringLiteral("0-65535")},
+                                         true),
+                           makeCondition(QStringLiteral("direction"), QStringLiteral("out")),
+                           makeCondition(QStringLiteral("proto"), QStringLiteral("tcp"))}));
+  QVERIFY2(allPorts.hasValue(), qPrintable(errorText(allPorts)));
+  const auto resolvedAllPorts = resolveNegation(allPorts.value().entries.at(0));
+  QVERIFY(!resolvedAllPorts.hasValue());
+  QCOMPARE(resolvedAllPorts.error().code, ErrorCode::InvalidArgument);
 }
 
 QTEST_GUILESS_MAIN(FilterPlanTest)

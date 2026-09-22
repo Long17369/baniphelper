@@ -103,6 +103,7 @@ class RuleModelTest : public QObject {
   void riskLevelFollowsWideConditionCount();
   void wideConditionsAreDetected();
   void looseWildcardIsFlagged();
+  void valueComplementCoversWhatIsLeftOut();
 };
 
 void RuleModelTest::tableCoversEveryDomainAndMode() {
@@ -611,6 +612,79 @@ void RuleModelTest::looseWildcardIsFlagged() {
   QVERIFY(scoped.hasValue());
   QCOMPARE(scoped.value().count(), 0);
   QVERIFY(scoped.value().level == RiskLevel::Normal);
+}
+
+void RuleModelTest::valueComplementCoversWhatIsLeftOut() {
+  // 求补是「取反」唯一的正确翻法（见 rule_model.h 里 complementAddressSpans 的说明），
+  // 所以这段运算错了就直接变成「封得比预期宽」—— 最不容易被发现的那种错。
+  const auto spanOf = [](const QString& literal) { return subnetToSpan(literal).value(); };
+
+  // 一个 IPv4 地址之外：前后两段，不多不少。
+  const auto single = complementAddressSpans({spanOf(QStringLiteral("1.2.3.4/32"))});
+  QVERIFY(single.hasValue());
+  QCOMPARE(single.value().size(), 2);
+  QCOMPARE(single.value().at(0).lower.text, QStringLiteral("0.0.0.0"));
+  QCOMPARE(single.value().at(0).upper.text, QStringLiteral("1.2.3.3"));
+  QCOMPARE(single.value().at(1).lower.text, QStringLiteral("1.2.3.5"));
+  QCOMPARE(single.value().at(1).upper.text, QStringLiteral("255.255.255.255"));
+
+  // 两头最容易在边界上出错：起点全零时不该出现「空区间」，终点全一时不该溢出。
+  const auto atZero = complementAddressSpans({spanOf(QStringLiteral("0.0.0.0/32"))});
+  QVERIFY(atZero.hasValue());
+  QCOMPARE(atZero.value().size(), 1);
+  QCOMPARE(atZero.value().at(0).lower.text, QStringLiteral("0.0.0.1"));
+  QCOMPARE(atZero.value().at(0).upper.text, QStringLiteral("255.255.255.255"));
+
+  const auto atMax = complementAddressSpans({spanOf(QStringLiteral("255.255.255.255/32"))});
+  QVERIFY(atMax.hasValue());
+  QCOMPARE(atMax.value().size(), 1);
+  QCOMPARE(atMax.value().at(0).lower.text, QStringLiteral("0.0.0.0"));
+  QCOMPARE(atMax.value().at(0).upper.text, QStringLiteral("255.255.255.254"));
+
+  // 相邻的两段要先合并，否则补集里会多出一个根本不存在的空洞。
+  const auto merged = complementAddressSpans(
+      {spanOf(QStringLiteral("1.2.3.0/24")), spanOf(QStringLiteral("1.2.4.0/24"))});
+  QVERIFY(merged.hasValue());
+  QCOMPARE(merged.value().size(), 2);
+  QCOMPARE(merged.value().at(0).upper.text, QStringLiteral("1.2.2.255"));
+  QCOMPARE(merged.value().at(1).lower.text, QStringLiteral("1.2.5.0"));
+
+  // IPv6 走同一套 16 字节运算，跨字节进位的方向不能反。
+  const auto v6 = complementAddressSpans({spanOf(QStringLiteral("2001:db8::/32"))});
+  QVERIFY(v6.hasValue());
+  QCOMPARE(v6.value().size(), 2);
+  QCOMPARE(v6.value().at(0).lower.text, QStringLiteral("::"));
+  QCOMPARE(v6.value().at(0).upper.text, QStringLiteral("2001:db7:ffff:ffff:ffff:ffff:ffff:ffff"));
+  QCOMPARE(v6.value().at(1).lower.text, QStringLiteral("2001:db9::"));
+  QCOMPARE(v6.value().at(1).upper.text, QStringLiteral("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"));
+
+  // 覆盖全域与空输入都得到空集。**两者都不是「不限定」而是「没有取值」**，
+  // 调用方必须自己区分（resolveNegation 就靠这个把「永不命中的规则」挖出来）。
+  QVERIFY(complementAddressSpans({spanOf(QStringLiteral("0.0.0.0/0"))}).value().isEmpty());
+  QVERIFY(complementAddressSpans({}).value().isEmpty());
+
+  // 混族要报错：跨族的补集没有任何意义，算出来必定是错的。
+  const auto mixed = complementAddressSpans(
+      {spanOf(QStringLiteral("1.2.3.4/32")), spanOf(QStringLiteral("2001:db8::/32"))});
+  QVERIFY(!mixed.hasValue());
+  QCOMPARE(mixed.error().code, ErrorCode::InvalidArgument);
+
+  // 端口同理：80 之外是 0-79 与 81-65535 两段。
+  PortSpan port80;
+  port80.lower = 80;
+  port80.upper = 80;
+  const QList<PortSpan> portComplement = complementPortSpans({port80});
+  QCOMPARE(portComplement.size(), 2);
+  QCOMPARE(static_cast<int>(portComplement.at(0).lower), 0);
+  QCOMPARE(static_cast<int>(portComplement.at(0).upper), 79);
+  QCOMPARE(static_cast<int>(portComplement.at(1).lower), 81);
+  QCOMPARE(static_cast<int>(portComplement.at(1).upper), 65535);
+
+  PortSpan allPorts;
+  allPorts.lower = 0;
+  allPorts.upper = 65535;
+  QVERIFY(complementPortSpans({allPorts}).isEmpty());
+  QVERIFY(complementPortSpans({}).isEmpty());
 }
 
 QTEST_GUILESS_MAIN(RuleModelTest)
